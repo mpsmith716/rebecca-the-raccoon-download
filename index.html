@@ -25,6 +25,68 @@ body.touch.roam #touch-ui { display: block; }
 <body>
 <div id="wrap"><canvas id="game" aria-label="Rebecca the Raccoon game"></canvas></div>
 <script>
+/* Grown-Ups Shop: catalog + entitlements. NO real payments in this build.
+   Loaded in the browser (window.Store) and by node tests (module.exports).
+
+   Billing is behind a tiny adapter interface so Google Play Billing (via a Capacitor plugin) can be dropped in later:
+     adapter.name                       -> string ('test' here; e.g. 'play' later)
+     adapter.testMode                   -> true only for the local stub (the UI then says "Test mode, no real charge")
+     adapter.purchase(product)          -> Promise<{ ok: bool, cancelled?: bool, token?: string }>
+     adapter.restore()                  -> Promise<string[]>  product ids the store says this account owns
+   A Play adapter would call the plugin's purchase/queryPurchases, verify + acknowledge, then resolve the same shapes.
+   Nothing here touches the network; the test adapter grants locally and stores entitlements in localStorage.
+
+   Rules kept by design: coins are never sold, nothing random is sold, no ads, no timers. */
+(function (global) {
+  'use strict';
+  var KEY = 'rebecca-raccoon.store.v1';
+  // kind: world | season | cosmetic | bundle | pass.  grants: entitlement ids this product unlocks (besides itself).
+  var CATALOG = [
+    { id: 'world.grove', kind: 'world', title: 'Glimmer Grove', price: '$3.99', desc: 'A glowing crystal forest.', icon: 'grove' },
+    { id: 'world.shore', kind: 'world', title: 'Seashell Shore', price: '', desc: 'Beaches and tide pools.', icon: 'shore', soon: true },
+    { id: 'world.peak', kind: 'world', title: 'Snowcap Peak', price: '', desc: 'Snowy hills to explore.', icon: 'peak', soon: true },
+    { id: 'pack.spooky', kind: 'season', title: 'Spooky Hollow', price: '$1.99', desc: 'Witch outfit + 3 spooky decor.', icon: 'spooky' },
+    { id: 'pack.winter', kind: 'season', title: 'Winter Cozy', price: '$1.99', desc: 'Winter outfit + 3 cozy decor.', icon: 'winter' },
+    { id: 'outfit.safari', kind: 'cosmetic', title: 'Safari Outfit', price: '$0.99', desc: 'Safari shirt and sun hat.', icon: 'safari' },
+    { id: 'outfit.pajamas', kind: 'cosmetic', title: 'Starry Pajamas', price: '$0.99', desc: 'Pajamas and a nightcap.', icon: 'pajamas' },
+    { id: 'set.starry', kind: 'cosmetic', title: 'Starry Night Set', price: '$1.49', desc: 'Starry bed, lamp and rug.', icon: 'starry' },
+    { id: 'bundle.everything', kind: 'bundle', title: 'Everything Bundle', price: '$6.99', desc: 'Every world and pack.', icon: 'everything', grants: ['world.grove', 'pack.spooky', 'pack.winter', 'outfit.safari', 'outfit.pajamas', 'set.starry'] },
+    { id: 'pass.monthly', kind: 'pass', title: 'Monthly Pass', price: '$2.99/mo', desc: 'Treehouse Pass: unlocks everything.', icon: 'pass', all: true },
+    { id: 'pass.yearly', kind: 'pass', title: 'Yearly Pass', price: '$19.99/yr', desc: 'Treehouse Pass: unlocks everything.', icon: 'pass', all: true }
+  ];
+  var BY = {}; CATALOG.forEach(function (p) { BY[p.id] = p; });
+  function cents(p) { var m = /\$(\d+)\.(\d\d)/.exec(p.price || ''); return m ? +m[1] * 100 + +m[2] : 0; }
+  function bundleSavings() { var b = BY['bundle.everything'], sum = b.grants.reduce(function (a, id) { return a + cents(BY[id]); }, 0); return { sum: sum, price: cents(b), pct: Math.round((1 - cents(b) / sum) * 100) }; }
+
+  var TestAdapter = { name: 'test', testMode: true,
+    purchase: function (p) { return Promise.resolve({ ok: true, token: 'test-' + p.id }); },
+    restore: function () { return Promise.resolve(null); } }; // null = "nothing from a server", keep local
+
+  function create(opts) {
+    opts = opts || {}; var storage = opts.storage || null, adapter = opts.adapter || TestAdapter, owned = {}, listeners = [];
+    try { var raw = storage && storage.getItem(KEY), o = raw && JSON.parse(raw); if (o && Array.isArray(o.owned)) o.owned.forEach(function (id) { if (BY[id] && !BY[id].soon) owned[id] = true; }); } catch (e) {}
+    function persist() { try { if (storage) storage.setItem(KEY, JSON.stringify({ v: 1, owned: Object.keys(owned) })); } catch (e) {} }
+    function changed() { persist(); listeners.forEach(function (f) { try { f(); } catch (e) {} }); }
+    function hasPass() { return !!(owned['pass.monthly'] || owned['pass.yearly']); }
+    // owns(entitlement): directly bought, granted by a bundle, or covered by the pass
+    function owns(id) { var p = BY[id]; if (!p || p.soon) return false; if (owned[id]) return true; if (hasPass()) return true;
+      return Object.keys(owned).some(function (k) { var g = BY[k].grants; return g && g.indexOf(id) >= 0; }); }
+    function status(id) { var p = BY[id]; if (!p) return 'none'; if (p.soon) return 'soon'; return owns(id) ? 'owned' : 'buy'; }
+    function purchase(id) { var p = BY[id]; if (!p) return Promise.resolve({ status: 'unknown' }); if (p.soon) return Promise.resolve({ status: 'soon' }); if (owns(id)) return Promise.resolve({ status: 'owned' });
+      return adapter.purchase(p).then(function (r) { if (!r || !r.ok) return { status: r && r.cancelled ? 'cancelled' : 'failed' }; owned[id] = true; changed(); return { status: 'granted', id: id }; },
+        function () { return { status: 'failed' }; }); }
+    function restore() { return adapter.restore().then(function (ids) { if (Array.isArray(ids)) { ids.forEach(function (id) { if (BY[id] && !BY[id].soon) owned[id] = true; }); changed(); } return Object.keys(owned); }); }
+    function reset() { owned = {}; changed(); } // test-mode helper (Grown-Ups Shop: "Reset test purchases")
+    return { CATALOG: CATALOG, product: function (id) { return BY[id]; }, list: function (kind) { return CATALOG.filter(function (p) { return !kind || p.kind === kind; }); },
+      owns: owns, status: status, purchase: purchase, restore: restore, reset: reset, ownedIds: function () { return Object.keys(owned); }, hasPass: hasPass,
+      testMode: !!adapter.testMode, adapterName: adapter.name, onChange: function (f) { listeners.push(f); }, bundleSavings: bundleSavings };
+  }
+  var api = { create: create, CATALOG: CATALOG, TestAdapter: TestAdapter, KEY: KEY, bundleSavings: bundleSavings };
+  if (typeof module !== 'undefined' && module.exports) module.exports = api; else global.StoreModule = api;
+})(typeof window !== 'undefined' ? window : this);
+
+</script>
+<script>
 /* Pure game rules (no DOM): treasure hunts with a hard dig gate, areas/unlocks, economy, inventory + placement,
    shop deals and trades, daily tasks and neighbor requests, fishing tables, clock -> day phase, save/load.
    Loaded in the browser (window.Logic) and by node tests (module.exports). */
@@ -75,8 +137,13 @@ body.touch.roam #touch-ui { display: block; }
       ]
     }
   };
-  var AREAS = { village: null, woods: null, meadow: { need: 'acorn' }, grove: { need: 'pearl' } };
-  function areaUnlocked(state, area) { var a = AREAS[area]; if (a === undefined) return false; return !a || hunt(state, a.need).dug; }
+  var AREAS = { village: null, woods: null, meadow: { need: 'acorn' }, grove: { need: 'pearl', premium: 'world.grove' } };
+  // Premium ownership comes from the Store module (src/js/store.js). Logic stays pure: the game injects the check.
+  var ownsFn = function () { return false; };
+  function setOwns(fn) { ownsFn = typeof fn === 'function' ? fn : function () { return false; }; }
+  function owns(pid) { return !!ownsFn(pid); }
+  function areaUnlocked(state, area) { var a = AREAS[area]; if (a === undefined) return false; if (!a) return true; if (a.premium && !owns(a.premium)) return false; return hunt(state, a.need).dug; }
+  function areaOwned(area) { var a = AREAS[area]; return a !== undefined && (!a || !a.premium || owns(a.premium)); }
 
   /* ================= Items ================= */
   // value = the normal shop price. Normal sell price = half of it.
@@ -124,17 +191,36 @@ body.touch.roam #touch-ui { display: block; }
     pumpkin: { name: 'Pumpkin', type: 'furniture', place: 'yard', w: 1, h: 1, value: 30 },
     bush: { name: 'Round Bush', type: 'furniture', place: 'yard', w: 1, h: 1, value: 25 },
     glowshroom: { name: 'Glow Mushroom', type: 'furniture', place: 'yard', w: 1, h: 1, value: 75, light: true, nightStock: true },
-    stonepath: { name: 'Stone Path', type: 'furniture', place: 'yardrug', w: 1, h: 1, value: 15 }
+    stonepath: { name: 'Stone Path', type: 'furniture', place: 'yardrug', w: 1, h: 1, value: 15 },
+    // premium decor (Grown-Ups Shop). premium = the product that grants it. Never sold or traded to Noodle, never in coin stock.
+    starbed: { name: 'Starry Bed', type: 'furniture', place: 'floor', w: 2, h: 1, value: 0, premium: 'set.starry' },
+    moonlamp: { name: 'Moon Lamp', type: 'furniture', place: 'floor', w: 1, h: 1, value: 0, light: true, premium: 'set.starry' },
+    starrug: { name: 'Starry Rug', type: 'furniture', place: 'rug', w: 2, h: 2, value: 0, premium: 'set.starry' },
+    jackolantern: { name: 'Jack-o\'-Lantern', type: 'furniture', place: 'yard', w: 1, h: 1, value: 0, light: true, premium: 'pack.spooky' },
+    cauldron: { name: 'Bubbly Cauldron', type: 'furniture', place: 'floor', w: 1, h: 1, value: 0, premium: 'pack.spooky' },
+    batgarland: { name: 'Bat Garland', type: 'furniture', place: 'wall', w: 2, h: 1, value: 0, premium: 'pack.spooky' },
+    snowman: { name: 'Snow Buddy', type: 'furniture', place: 'yard', w: 1, h: 1, value: 0, premium: 'pack.winter' },
+    fireplace: { name: 'Cozy Fireplace', type: 'furniture', place: 'floor', w: 2, h: 1, value: 0, light: true, premium: 'pack.winter' },
+    snowgarland: { name: 'Snowflake Garland', type: 'furniture', place: 'wall', w: 2, h: 1, value: 0, premium: 'pack.winter' }
   };
   function value(item) { return ITEMS[item] ? ITEMS[item].value : 0; }
-  function sellable(item) { var t = ITEMS[item] && ITEMS[item].type; return !!t && t !== 'treasure' && t !== 'tool'; }
+  function sellable(item) { var t = ITEMS[item] && ITEMS[item].type; return !!t && t !== 'treasure' && t !== 'tool' && !ITEMS[item].premium; }
+  /* ---- outfits (cosmetic only) ---- */
+  var OUTFITS = { classic: { name: 'Plaid Explorer', product: null }, safari: { name: 'Safari Explorer', product: 'outfit.safari' }, pajamas: { name: 'Starry Pajamas', product: 'outfit.pajamas' },
+    witch: { name: 'Little Witch', product: 'pack.spooky' }, winter: { name: 'Winter Cozy', product: 'pack.winter' } };
+  function canWear(o) { var d = OUTFITS[o]; return !!d && (!d.product || owns(d.product)); }
+  function wear(state, o) { if (!canWear(o)) return false; state.outfit = o; return true; }
+  function outfitOf(state) { return canWear(state.outfit) ? state.outfit : 'classic'; }
+  // Grant each owned product's decor once (into the bag). Re-running is a no-op, so restore/reinstall never duplicates.
+  function syncPremium(state) { var got = [];
+    Object.keys(ITEMS).forEach(function (k) { var pid = ITEMS[k].premium; if (pid && owns(pid) && !state.granted[k]) { state.granted[k] = true; addItem(state, k, 1); got.push(k); } }); return got; }
   function normalSell(item) { return Math.floor(value(item) / 2); }
 
   /* ================= State ================= */
   function newState() {
     return { v: 2, mode: 'guided', pos: { x: 520, y: 800 }, dir: 'down', coins: 50,
       hunts: { acorn: blankHunt(), pearl: blankHunt() },
-      bag: {}, book: {}, placed: [], nextId: 1,
+      bag: {}, book: {}, placed: [], nextId: 1, outfit: 'classic', granted: {},
       day: { key: '', picked: [], dailySolved: false, tasks: [], requests: [], bought: [], soldDeal: [], traded: [] },
       hearts: { hazel: 0, bramble: 0 }, muted: false, seenIntro: false, seen: {} };
   }
@@ -200,8 +286,8 @@ body.touch.roam #touch-ui { display: block; }
   /* ================= Shop (Noodle the snake) ================= */
   // Deterministic per date: everyone sees the same stock, nothing random is ever paid for.
   var DEAL_MULTS = [0.6, 0.8, 1, 1, 1.25, 1.5];
-  var FURN = Object.keys(ITEMS).filter(function (k) { return ITEMS[k].type === 'furniture' && !ITEMS[k].nightStock; });
-  var NIGHT_FURN = Object.keys(ITEMS).filter(function (k) { return ITEMS[k].nightStock; });
+  var FURN = Object.keys(ITEMS).filter(function (k) { return ITEMS[k].type === 'furniture' && !ITEMS[k].nightStock && !ITEMS[k].premium; });
+  var NIGHT_FURN = Object.keys(ITEMS).filter(function (k) { return ITEMS[k].nightStock && !ITEMS[k].premium; });
   function dealLabel(price, usual) { var r = price / usual; return r <= 0.85 ? 'bargain' : r < 1.15 ? 'fair' : 'pricey'; }
   function shopStock(key, night) {
     var r = rng(dayNumber(key) * 2654435761 + 7), items = shuffle(FURN, r).slice(0, 6), mults = shuffle(DEAL_MULTS, r);
@@ -222,14 +308,14 @@ body.touch.roam #touch-ui { display: block; }
     return [0, 1, 2].map(function (i) { var g = giveP[i], n = 1 + ((r() * 2) | 0), t = getP[i]; var gv = value(g) * n, tv = value(t); return { id: 'trade:' + i, give: g, n: n, get: t, giveValue: gv, getValue: tv, deal: tv >= gv * 1.15 ? 'bargain' : tv <= gv * 0.85 ? 'pricey' : 'fair' }; });
   }
   function buy(state, key, offer) {
-    if (!offer || !ITEMS[offer.item]) return 'bad';
+    if (!offer || !ITEMS[offer.item] || ITEMS[offer.item].premium) return 'bad'; // premium decor is never sold for coins
     if (offer.item === 'lantern' && (state.bag.lantern || 0) > 0) return 'have';
     if (!offer.always && state.day.bought.indexOf(offer.id) >= 0) return 'soldout';
     if (!spend(state, offer.price)) return 'coins';
     addItem(state, offer.item, 1); if (!offer.always) state.day.bought.push(offer.id); event(state, 'buy', offer.item); return 'ok';
   }
   function sell(state, key, item) { if (!sellable(item) || !removeItem(state, item, 1)) return 0; var p = sellPrice(state, key, item); addCoins(state, p); event(state, 'sell', item); return p; }
-  function trade(state, key, t) { if (state.day.traded.indexOf(t.id) >= 0) return 'done'; if (!((state.bag[t.give] || 0) >= t.n)) return 'missing'; removeItem(state, t.give, t.n); addItem(state, t.get, 1); state.day.traded.push(t.id); event(state, 'trade', t.get); return 'ok'; }
+  function trade(state, key, t) { if (!t || !sellable(t.give) || !ITEMS[t.get] || ITEMS[t.get].premium) return 'bad'; if (state.day.traded.indexOf(t.id) >= 0) return 'done'; if (!((state.bag[t.give] || 0) >= t.n)) return 'missing'; removeItem(state, t.give, t.n); addItem(state, t.get, 1); state.day.traded.push(t.id); event(state, 'trade', t.get); return 'ok'; }
 
   /* ================= Tasks + requests ================= */
   var TASKS = [
@@ -335,6 +421,8 @@ body.touch.roam #touch-ui { display: block; }
         requests: Array.isArray(d.requests) ? d.requests.filter(function (q) { return q && ITEMS[q.item] && REQ_ITEMS[q.npc]; }).slice(0, 6).map(function (q) { return { npc: q.npc, item: q.item, coins: Math.max(0, Math.min(500, q.coins | 0)), gift: ITEMS[q.gift] && ITEMS[q.gift].type === 'furniture' ? q.gift : null, done: !!q.done }; }) : [] };
     }
     if (o.hearts) { s.hearts.hazel = Math.max(0, o.hearts.hazel | 0); s.hearts.bramble = Math.max(0, o.hearts.bramble | 0); }
+    if (OUTFITS[o.outfit]) s.outfit = o.outfit; // wearing is re-checked against ownership at draw time
+    if (o.granted && typeof o.granted === 'object') for (var gk in o.granted) if (ITEMS[gk] && ITEMS[gk].premium) s.granted[gk] = true;
     s.muted = !!o.muted; s.seenIntro = !!o.seenIntro; if (o.seen && typeof o.seen === 'object') for (var k in o.seen) if (/^[a-z]+$/.test(k)) s.seen[k] = !!o.seen[k];
     return s;
   }
@@ -342,6 +430,7 @@ body.touch.roam #touch-ui { display: block; }
   function load(storage) { try { var raw = storage.getItem(SAVE_KEY); return raw ? sanitize(JSON.parse(raw)) : null; } catch (e) { return newState(); } }
 
   var api = { SAVE_KEY: SAVE_KEY, MODES: MODES, TREASURES: TREASURES, AREAS: AREAS, ITEMS: ITEMS, DAILY: DAILY, FISH: FISH, TASKS: TASKS, GRIDS: GRIDS, NIGHT_BUGS: NIGHT_BUGS, DAY_BUGS: DAY_BUGS, TREASURE_ITEM: TREASURE_ITEM,
+    setOwns: setOwns, owns: owns, areaOwned: areaOwned, AREAS: AREAS, OUTFITS: OUTFITS, canWear: canWear, wear: wear, outfitOf: outfitOf, syncPremium: syncPremium,
     newState: newState, hunt: hunt, areaUnlocked: areaUnlocked, canReadRiddle: canReadRiddle, readRiddle: readRiddle, cluesFound: cluesFound, nextClueIndex: nextClueIndex, canFindClue: canFindClue, findClue: findClue,
     canDig: canDig, dig: dig, stage: stage, activeHunt: activeHunt, value: value, sellable: sellable, normalSell: normalSell,
     addCoins: addCoins, spend: spend, addItem: addItem, removeItem: removeItem, collect: collect, give: give,
@@ -443,6 +532,38 @@ body.touch.roam #touch-ui { display: block; }
     if (mood === 'happy') { c.beginPath(); c.moveTo(hx - 6, hy + 15); c.quadraticCurveTo(hx, hy + 24, hx + 6, hy + 15); c.closePath(); c.fillStyle = '#7a2448'; c.fill(); c.lineWidth = 1.8; c.strokeStyle = C.eye; c.stroke(); c.fillStyle = '#ff8fb0'; ell(c, hx, hy + 20, 3, 1.6); c.fill(); }
     else { c.beginPath(); c.moveTo(hx - 6, hy + 15); c.quadraticCurveTo(hx - 3, hy + 18, hx, hy + 14.5); c.quadraticCurveTo(hx + 3, hy + 18, hx + 6, hy + 15); c.lineWidth = 2; c.strokeStyle = C.eye; c.lineCap = 'round'; c.stroke(); }
   }
+  /* ---- outfits: shirt palette + pattern + hat. Cosmetic only. ---- */
+  var OUT = {
+    classic: null,
+    safari: { flan: '#d9c07a', flanLo: '#a88c4a', pat: 'pocket', hat: 'safari' },
+    pajamas: { flan: '#6577cc', flanLo: '#44529e', pat: 'stars', hat: 'nightcap' },
+    witch: { flan: '#8257c2', flanLo: '#5a3794', pat: 'stripes', stripe: '#ff9a3c', hat: 'witch' },
+    winter: { flan: '#eef5f8', flanLo: '#b9ccd8', pat: 'zigzag', stripe: '#e0525e', hat: 'beanie' }
+  }, CUR = null;
+  function pattern(c, x0, y0, w, h) {
+    if (!CUR) return plaid(c, x0, y0, w, h);
+    if (CUR.pat === 'stars') { c.fillStyle = '#ffe680'; for (var y = y0 + 6, j = 0; y < y0 + h; y += 10, j++) for (var x = x0 + (j % 2 ? 4 : 9); x < x0 + w; x += 11) star(c, x, y, 2.6); }
+    else if (CUR.pat === 'stripes') { c.fillStyle = CUR.stripe; for (y = y0 + 8; y < y0 + h; y += 10) c.fillRect(x0, y, w, 3.4); }
+    else if (CUR.pat === 'zigzag') { c.strokeStyle = CUR.stripe; c.lineWidth = 3; [y0 + 12, y0 + 24].forEach(function (yy) { c.beginPath(); for (var x = x0; x <= x0 + w; x += 5) c.lineTo(x, yy + ((x - x0) / 5 % 2 ? 3 : -3)); c.stroke(); }); }
+    else if (CUR.pat === 'pocket') { c.strokeStyle = 'rgba(90,70,30,.55)'; c.lineWidth = 1.6; c.strokeRect(x0 + w / 2 - 12, y0 + 12, 8, 7); c.strokeRect(x0 + w / 2 + 4, y0 + 12, 8, 7); c.fillStyle = 'rgba(90,70,30,.35)'; c.fillRect(x0 + w / 2 - .8, y0, 1.6, h); }
+  }
+  function star(c, x, y, r) { c.beginPath(); for (var i = 0; i < 10; i++) { var a = -Math.PI / 2 + i * Math.PI / 5, rr2 = i % 2 ? r * .45 : r; c.lineTo(x + Math.cos(a) * rr2, y + Math.sin(a) * rr2); } c.closePath(); c.fill(); }
+  // hat on the head top; (x, hy) = head centre. side = profile view
+  function hat(c, kind, x, hy, side) {
+    var y = hy - 22;
+    if (kind === 'safari') { ell(c, x, y + 2, 34, 8); fillStroke(c, lgrad(c, y - 4, y + 8, '#e9d394', '#bfa15c'));
+      c.beginPath(); c.moveTo(x - 20, y + 1); c.quadraticCurveTo(x - 20, y - 22, x, y - 22); c.quadraticCurveTo(x + 20, y - 22, x + 20, y + 1); c.closePath(); fillStroke(c, lgrad(c, y - 22, y, '#f0dca0', '#c9ab68'));
+      c.fillStyle = '#7a5a2c'; c.fillRect(x - 19.5, y - 6, 39, 5); }
+    else if (kind === 'nightcap') { c.beginPath(); c.moveTo(x - 24, y + 2); c.quadraticCurveTo(x - 10, y - 34, x + 18, y - 30); c.quadraticCurveTo(x + 34, y - 26, x + 34, y - 6); c.quadraticCurveTo(x + 22, y - 18, x + 24, y + 2); c.closePath(); fillStroke(c, lgrad(c, y - 34, y, '#7f90e0', '#4f5fb0'));
+      c.fillStyle = '#ffe680'; star(c, x - 4, y - 14, 4); star(c, x + 12, y - 22, 3); rr(c, x - 26, y - 4, 52, 10, 5); fillStroke(c, '#fff6e0'); ell(c, x + 34, y - 4, 7, 7); fillStroke(c, '#fff6e0'); }
+    else if (kind === 'witch') { ell(c, x, y + 2, 38, 8); fillStroke(c, '#5a3794');
+      c.beginPath(); c.moveTo(x - 20, y + 1); c.lineTo(x + 2, y - 46); c.quadraticCurveTo(x + 14, y - 50, x + 20, y - 40); c.quadraticCurveTo(x + 8, y - 38, x + 6, y - 30); c.lineTo(x + 20, y + 1); c.closePath(); fillStroke(c, lgrad(c, y - 50, y, '#9a72d6', '#6a44a6'));
+      c.fillStyle = '#ff9a3c'; c.beginPath(); c.moveTo(x - 17, y - 6); c.lineTo(x + 17, y - 6); c.lineTo(x + 18, y - 1); c.lineTo(x - 18, y - 1); c.closePath(); c.fill(); c.fillStyle = '#ffe680'; star(c, x - 3, y - 20, 4); }
+    else if (kind === 'beanie') { c.beginPath(); c.moveTo(x - 25, y + 4); c.quadraticCurveTo(x - 26, y - 26, x, y - 27); c.quadraticCurveTo(x + 26, y - 26, x + 25, y + 4); c.closePath(); fillStroke(c, lgrad(c, y - 27, y + 4, '#f0707a', '#c23e4c'));
+      rr(c, x - 27, y - 4, 54, 11, 5); fillStroke(c, '#fff6e0'); c.strokeStyle = 'rgba(160,40,55,.4)'; c.lineWidth = 1.6; for (var i = -18; i <= 18; i += 6) { c.beginPath(); c.moveTo(x + i, y - 22 + Math.abs(i) * .3); c.lineTo(x + i, y - 6); c.stroke(); }
+      ell(c, x, y - 29, 8, 8); fillStroke(c, grad(c, x, y - 29, 8, '#ffffff', '#e8e0d8')); }
+  }
+  function headwear(c, x, hy, bowX, rot, side) { if (CUR && CUR.hat) hat(c, CUR.hat, x, hy, side); else bow(c, bowX, hy - (side ? 25 : 22), 1, rot); }
   function plaid(c, x0, y0, w, h) {
     c.fillStyle = C.plaidB; for (var x = x0 + 3; x < x0 + w; x += 11) c.fillRect(x, y0, 4, h);
     for (var y = y0 + 4; y < y0 + h; y += 11) c.fillRect(x0, y, w, 4);
@@ -488,7 +609,7 @@ body.touch.roam #touch-ui { display: block; }
     bootF(c, -7.5, 0, lL); bootF(c, 7.5, 0, lR);
     // torso
     c.beginPath(); c.moveTo(-15, ty - 4); c.quadraticCurveTo(0, ty - 8, 15, ty - 4); c.lineTo(18, ty + 21); c.quadraticCurveTo(0, ty + 26, -18, ty + 21); c.closePath();
-    c.save(); c.clip(); c.fillStyle = C.flan; c.fillRect(-20, ty - 10, 40, 40); plaid(c, -20, ty - 10, 40, 40);
+    c.save(); c.clip(); c.fillStyle = C.flan; c.fillRect(-20, ty - 10, 40, 40); pattern(c, -20, ty - 10, 40, 40);
     c.fillStyle = 'rgba(80,10,30,.18)'; c.fillRect(6, ty - 10, 16, 40); c.restore(); stroke(c);
     // cargo pocket hint + belt
     c.fillStyle = C.pantsLo; rr(c, -17, ty + 19, 34, 5, 2.5); c.fill();
@@ -507,7 +628,7 @@ body.touch.roam #touch-ui { display: block; }
     headShape(c, 0, hy); fillStroke(c, grad(c, 0, hy, 34, C.furHi, C.fur));
     c.fillStyle = 'rgba(70,40,120,.18)'; ell(c, 0, hy + 24, 26, 6); c.fill();
     faceFront(c, 0, hy, P.mood, P.blink, P.look);
-    bow(c, 17, hy - 22, 1, .25);
+    headwear(c, 0, hy, 17, .25);
     if (P.holdAcorn) { acorn(c, (aL[0] + aR[0]) / 2, Math.min(aL[1], aR[1]) - 8, 1.15, true); paw(c, aL[0] - 3, aL[1]); paw(c, aR[0] + 3, aR[1]); }
   }
   function drawBack(c, P) {
@@ -517,7 +638,7 @@ body.touch.roam #touch-ui { display: block; }
     rr(c, 2, -20 + by - lR * .3, 11, 14 - lR * .4, 4); fillStroke(c, lgrad(c, -20, -6, C.pants, C.pantsLo));
     bootF(c, -7.5, 0, lL); bootF(c, 7.5, 0, lR);
     c.beginPath(); c.moveTo(-15, ty - 4); c.quadraticCurveTo(0, ty - 8, 15, ty - 4); c.lineTo(18, ty + 21); c.quadraticCurveTo(0, ty + 26, -18, ty + 21); c.closePath();
-    c.save(); c.clip(); c.fillStyle = C.flan; c.fillRect(-20, ty - 10, 40, 40); plaid(c, -20, ty - 10, 40, 40); c.restore(); stroke(c);
+    c.save(); c.clip(); c.fillStyle = C.flan; c.fillRect(-20, ty - 10, 40, 40); pattern(c, -20, ty - 10, 40, 40); c.restore(); stroke(c);
     limb(c, [-15, ty + 1], P.armL, 8.5, C.flan, C.flanLo); limb(c, [15, ty + 1], P.armR, 8.5, C.flan, C.flanLo);
     paw(c, P.armL[0], P.armL[1]); paw(c, P.armR[0], P.armR[1]);
     // backpack
@@ -531,7 +652,7 @@ body.touch.roam #touch-ui { display: block; }
     headShape(c, 0, hy); fillStroke(c, grad(c, 0, hy, 34, C.furHi, C.fur));
     c.fillStyle = 'rgba(255,255,255,.16)'; ell(c, -8, hy - 10, 12, 7, -.3); c.fill();
     c.beginPath(); c.moveTo(-6, hy + 20); c.quadraticCurveTo(0, hy + 25, 6, hy + 20); stroke(c, 2);
-    bow(c, -17, hy - 22, 1, -.25);
+    headwear(c, 0, hy, -17, -.25);
     tail(c, -4, -24 + by, Math.PI * .92 + P.tail * .8, 40);
   }
   function drawSide(c, P) { // facing right
@@ -546,7 +667,7 @@ body.touch.roam #touch-ui { display: block; }
     ell(c, -15, ty - 11, 4, 3); c.strokeStyle = C.rollLo; c.lineWidth = 1.6; c.stroke();
     // torso
     c.beginPath(); c.moveTo(-10, ty - 4); c.quadraticCurveTo(2, ty - 8, 12, ty - 4); c.lineTo(13, ty + 21); c.quadraticCurveTo(0, ty + 25, -12, ty + 21); c.closePath();
-    c.save(); c.clip(); c.fillStyle = C.flan; c.fillRect(-14, ty - 10, 30, 40); plaid(c, -14, ty - 10, 30, 40); c.restore(); stroke(c);
+    c.save(); c.clip(); c.fillStyle = C.flan; c.fillRect(-14, ty - 10, 30, 40); pattern(c, -14, ty - 10, 30, 40); c.restore(); stroke(c);
     c.fillStyle = C.pack; rr(c, -4, ty - 5, 5, 20, 2.5); c.fill();
     limb(c, [1, -16 + by], [sw * 7 + 1, -8], 10, C.pants, C.pantsLo); bootS(c, sw * 7, 0, Math.max(0, P.liftS) * 4);
     // head profile
@@ -567,7 +688,7 @@ body.touch.roam #touch-ui { display: block; }
     c.beginPath(); if (P.mood === 'happy') { c.moveTo(31, hy + 14); c.quadraticCurveTo(35, hy + 20, 39, hy + 13); c.closePath(); c.fillStyle = '#7a2448'; c.fill(); }
     else { c.moveTo(30, hy + 14); c.quadraticCurveTo(34, hy + 17, 38, hy + 13); c.lineWidth = 2; c.strokeStyle = C.eye; c.stroke(); }
     c.fillStyle = C.blush; ell(c, 22, hy + 11, 5, 3); c.fill();
-    bow(c, -2, hy - 25, 1, -.15);
+    headwear(c, 2, hy - 2, -2, -.15, true);
     // front arm
     limb(c, [2, ty + 2], P.armF, 7, C.flan, C.flanLo);
     if (P.tool) trowel(c, P.armF[0], P.armF[1], P.toolAng);
@@ -597,11 +718,12 @@ body.touch.roam #touch-ui { display: block; }
       var h = Math.abs(Math.sin(t * 6)); P.by = -h * 10; P.legL = P.legR = h * 3; P.armL = [-20, -60 - h * 4]; P.armR = [20, -60 - h * 4]; P.armF = [10, -64]; P.armB = [-8, -62];
       P.mood = 'happy'; P.tail = Math.sin(t * 16) * .35; if (o.holdAcorn) { P.armL = [-9, -102 - h * 3]; P.armR = [9, -102 - h * 3]; }
     }
+    var prev = { flan: C.flan, flanLo: C.flanLo }; CUR = OUT[o.outfit] || null; if (CUR) { C.flan = CUR.flan; C.flanLo = CUR.flanLo; }
     c.save(); c.translate(x, y); c.scale(s, s);
     var sh = 1 + P.by / 40; c.fillStyle = 'rgba(40,30,60,.22)'; ell(c, 0, 1, 22 * sh, 6 * sh); c.fill();
     if (dir === 'down') drawFront(c, P); else if (dir === 'up') drawBack(c, P);
     else { if (dir === 'left') c.scale(-1, 1); drawSide(c, P); }
-    c.restore();
+    c.restore(); C.flan = prev.flan; C.flanLo = prev.flanLo; CUR = null;
   }
 
   function acorn(c, x, y, s, glow) {
@@ -614,7 +736,7 @@ body.touch.roam #touch-ui { display: block; }
     c.restore();
   }
 
-  global.Art = { C: C, rebecca: rebecca, acorn: acorn, ell: ell, rr: rr, stroke: stroke, grad: grad, lgrad: lgrad, fillStroke: fillStroke, bow: bow, ear: ear, limb: limb };
+  global.Art = { OUTFITS: Object.keys(OUT), star: star, hat: hat, C: C, rebecca: rebecca, acorn: acorn, ell: ell, rr: rr, stroke: stroke, grad: grad, lgrad: lgrad, fillStroke: fillStroke, bow: bow, ear: ear, limb: limb };
 })(typeof window !== 'undefined' ? window : globalThis);
 
 </script>
@@ -1185,7 +1307,39 @@ body.touch.roam #touch-ui { display: block; }
       rr(c, u * .16, -u * 1.02, u * .06, u * .2, 2); fs(c, '#ffd36e', l * .8); },
     pumpkin: function (c, W, u) { var l = lw(u); [-.18, .18, 0].forEach(function (d) { ell(c, d * u, -u * .26, u * .22, u * .25); fs(c, G(c, d * u, -u * .3, u * .25, '#ffc070', '#f08a3a'), l); }); rr(c, -u * .03, -u * .6, u * .06, u * .12, 2); fs(c, '#6c8f3a', l); },
     bush: function (c, W, u) { var l = lw(u); [[-.18, -.3, .24], [.18, -.3, .24], [0, -.48, .26]].forEach(function (b) { ell(c, b[0] * u, b[1] * u, b[2] * u, b[2] * u * .9); fs(c, G(c, b[0] * u, b[1] * u, b[2] * u, '#a5dc78', '#5d9f4b'), l); }); c.fillStyle = '#ff6b8a'; ell(c, u * .1, -u * .45, u * .04, u * .04); c.fill(); ell(c, -u * .15, -u * .3, u * .04, u * .04); c.fill(); },
-    glowshroom: function (c, W, u) { c.save(); c.scale(u / 30, u / 30); global.World.glowShroom(c, -5, 0, 1); global.World.glowShroom(c, 8, 1, .7); c.restore(); }
+    glowshroom: function (c, W, u) { c.save(); c.scale(u / 30, u / 30); global.World.glowShroom(c, -5, 0, 1); global.World.glowShroom(c, 8, 1, .7); c.restore(); },
+    // ---- premium decor ----
+    starbed: function (c, W, u, side) { var h = u * .9, l = lw(u);
+      rr(c, -W / 2, -h * 1.7, u * .34, h * 1.7, 8); fs(c, LG(c, -h * 1.7, 0, '#5a6ac0', '#38428a'), l); star(c, -W / 2 + u * .17, -h * 1.45, u * .1, '#ffe680', l * .7);
+      rr(c, -W / 2 + u * .22, -h * .9, W - u * .22, h * .9, 10); fs(c, LG(c, -h, 0, '#7f90e0', '#4f5fb0'), l);
+      for (var i = 0; i < 5; i++) star(c, -W / 2 + u * (.95 + i * .26), -h * (.3 + (i % 2) * .3), u * .07, '#ffe680', l * .6);
+      ell(c, -W / 2 + u * .6, -h * .9, u * .3, h * .22); fs(c, '#fff6e0', l); },
+    moonlamp: function (c, W, u, side, t) { var l = lw(u); rr(c, -u * .06, -u * .62, u * .12, u * .62, 3); fs(c, '#d8d0ea', l); ell(c, 0, -u * .05, u * .2, u * .06); fs(c, '#8a7fb0', l);
+      ell(c, 0, -u * .82, u * .26, u * .26); fs(c, G(c, -u * .05, -u * .88, u * .28, '#fffbe0', '#ffe27a'), l);
+      c.save(); ell(c, 0, -u * .82, u * .26, u * .26); c.clip(); ell(c, u * .14, -u * .9, u * .2, u * .22); c.fillStyle = 'rgba(79,95,176,.55)'; c.fill(); c.restore(); },
+    jackolantern: function (c, W, u, side, t) { var l = lw(u); [-.18, .18, 0].forEach(function (d) { ell(c, d * u, -u * .27, u * .23, u * .26); fs(c, G(c, d * u, -u * .3, u * .26, '#ffb35a', '#e0702a'), l); });
+      rr(c, -u * .03, -u * .62, u * .06, u * .12, 2); fs(c, '#6c8f3a', l); var gl = .8 + Math.sin(t * 5) * .2; c.fillStyle = 'rgba(255,230,120,' + gl + ')';
+      [-1, 1].forEach(function (d) { c.beginPath(); c.moveTo(d * u * .14, -u * .38); c.lineTo(d * u * .06, -u * .26); c.lineTo(d * u * .2, -u * .26); c.closePath(); c.fill(); });
+      c.beginPath(); c.moveTo(-u * .16, -u * .18); c.quadraticCurveTo(0, -u * .06, u * .16, -u * .18); c.quadraticCurveTo(0, -u * .12, -u * .16, -u * .18); c.fill(); },
+    cauldron: function (c, W, u, side, t) { var l = lw(u); ell(c, 0, -u * .32, u * .36, u * .3); fs(c, G(c, -u * .1, -u * .4, u * .4, '#6a5f86', '#2e2a40'), l);
+      ell(c, 0, -u * .56, u * .34, u * .09); fs(c, '#9fe07a', l); for (var i = 0; i < 3; i++) { var k = (t * .8 + i / 3) % 1; ell(c, (i - 1) * u * .14, -u * .6 - k * u * .4, u * .06 * (1 - k * .5), u * .06 * (1 - k * .5)); c.globalAlpha = 1 - k; fs(c, '#c8f5a8', l * .6); c.globalAlpha = 1; }
+      [-1, 1].forEach(function (d) { rr(c, d * u * .24 - u * .04, -u * .08, u * .08, u * .1, 2); fs(c, '#2e2a40', l * .7); }); },
+    batgarland: function (c, W, u, side, t) { var l = lw(u), y = -u * .72; c.beginPath(); c.moveTo(-W / 2 + 4, y); c.quadraticCurveTo(0, y + u * .38, W / 2 - 4, y); c.lineWidth = l * .8; c.strokeStyle = INK; c.stroke();
+      for (var i = 0; i < 5; i++) { var k = (i + .5) / 5, x = -W / 2 + 4 + k * (W - 8), yy = y + Math.sin(k * Math.PI) * u * .19 + u * .1, f = Math.sin(t * 4 + i) * .15;
+        if (i % 2) { c.save(); c.translate(x, yy); c.beginPath(); c.moveTo(0, -u * .05); c.quadraticCurveTo(-u * .12, -u * .14 - f * u, -u * .2, -u * .02); c.quadraticCurveTo(-u * .12, -u * .04, -u * .06, u * .04); c.lineTo(u * .06, u * .04); c.quadraticCurveTo(u * .12, -u * .04, u * .2, -u * .02); c.quadraticCurveTo(u * .12, -u * .14 - f * u, 0, -u * .05); c.closePath(); fs(c, '#5a3794', l * .7);
+          c.fillStyle = '#ffe680'; ell(c, -u * .03, -u * .0, u * .015, u * .015); c.fill(); ell(c, u * .03, 0, u * .015, u * .015); c.fill(); c.restore(); }
+        else { c.beginPath(); c.moveTo(x - u * .1, yy - u * .06); c.lineTo(x + u * .1, yy - u * .06); c.lineTo(x, yy + u * .14); c.closePath(); fs(c, '#ff9a3c', l * .7); } } },
+    snowman: function (c, W, u) { var l = lw(u); ell(c, 0, -u * .22, u * .26, u * .22); fs(c, G(c, -u * .06, -u * .28, u * .28, '#ffffff', '#cfe0ec'), l); ell(c, 0, -u * .58, u * .19, u * .18); fs(c, G(c, -u * .05, -u * .62, u * .2, '#ffffff', '#cfe0ec'), l);
+      rr(c, -u * .2, -u * .45, u * .4, u * .07, 3); fs(c, '#e0525e', l * .8); c.fillStyle = INK; ell(c, -u * .06, -u * .62, u * .022, u * .022); c.fill(); ell(c, u * .06, -u * .62, u * .022, u * .022); c.fill();
+      c.beginPath(); c.moveTo(0, -u * .57); c.lineTo(u * .14, -u * .54); c.lineTo(0, -u * .52); c.closePath(); fs(c, '#ff9a3c', l * .6); c.fillStyle = '#ff9ccb'; ell(c, -u * .11, -u * .54, u * .03, u * .02); c.fill(); ell(c, u * .11, -u * .54, u * .03, u * .02); c.fill(); },
+    fireplace: function (c, W, u, side, t) { var l = lw(u), h = u * 1.2; rr(c, -W / 2 + 4, -h, W - 8, h, 8); fs(c, LG(c, -h, 0, '#d98a6a', '#a8583e'), l);
+      c.strokeStyle = 'rgba(80,30,20,.25)'; c.lineWidth = l * .7; for (var y = -h + u * .25; y < 0; y += u * .22) { c.beginPath(); c.moveTo(-W / 2 + 6, y); c.lineTo(W / 2 - 6, y); c.stroke(); }
+      rr(c, -W / 2, -h - u * .1, W, u * .16, 5); fs(c, PL, l); rr(c, -W * .28, -h * .66, W * .56, h * .66, 14); fs(c, '#3a2430', l);
+      var fl = Math.sin(t * 7) * .06; [[0, .5, '#ff9a3c'], [-.1, .36, '#ffd36e'], [.1, .34, '#ffd36e']].forEach(function (f) { c.beginPath(); c.moveTo(f[0] * W - u * .12, -u * .06); c.quadraticCurveTo(f[0] * W - u * .14, -u * f[1], f[0] * W + fl * u, -u * (f[1] + .14)); c.quadraticCurveTo(f[0] * W + u * .14, -u * f[1], f[0] * W + u * .12, -u * .06); c.closePath(); c.fillStyle = f[2]; c.fill(); });
+      rr(c, -W * .24, -u * .1, W * .48, u * .08, 3); fs(c, '#8f5f33', l * .7); },
+    snowgarland: function (c, W, u, side, t) { var l = lw(u), y = -u * .72; c.beginPath(); c.moveTo(-W / 2 + 4, y); c.quadraticCurveTo(0, y + u * .38, W / 2 - 4, y); c.lineWidth = l * .8; c.strokeStyle = '#7fb6e0'; c.stroke();
+      for (var i = 0; i < 5; i++) { var k = (i + .5) / 5, x = -W / 2 + 4 + k * (W - 8), yy = y + Math.sin(k * Math.PI) * u * .19 + u * .12; c.save(); c.translate(x, yy); c.rotate(t * .5 + i); c.strokeStyle = INK; c.lineWidth = l * 1.6; for (var a = 0; a < 3; a++) { c.rotate(Math.PI / 3); c.beginPath(); c.moveTo(-u * .1, 0); c.lineTo(u * .1, 0); c.stroke(); }
+        c.strokeStyle = '#e8f6ff'; c.lineWidth = l * .8; for (a = 0; a < 3; a++) { c.rotate(Math.PI / 3); c.beginPath(); c.moveTo(-u * .1, 0); c.lineTo(u * .1, 0); c.stroke(); } c.restore(); } }
   };
   function star(c, x, y, s, col, l) { c.beginPath(); for (var i = 0; i < 10; i++) { var r = i % 2 ? s * .45 : s, a = -Math.PI / 2 + i * Math.PI / 5; c.lineTo(x + Math.cos(a) * r, y + Math.sin(a) * r); } c.closePath(); fs(c, col, l); }
   function flower(c, x, y, s, col, l) { for (var p = 0; p < 5; p++) { var a = p / 5 * 6.28; ell(c, x + Math.cos(a) * s, y + Math.sin(a) * s, s * .8, s * .8); c.fillStyle = col; c.fill(); c.lineWidth = l; c.strokeStyle = INK; c.stroke(); } ell(c, x, y, s * .6, s * .6); c.fillStyle = '#ffd36e'; c.fill(); }
@@ -1194,6 +1348,8 @@ body.touch.roam #touch-ui { display: block; }
     if (item === 'roundrug') { ell(c, cx, cy, w / 2 - 3, h / 2 - 3); fs(c, '#c9a6ec', l); ell(c, cx, cy, w * .32, h * .32); c.lineWidth = l * 2; c.strokeStyle = '#ff9ccb'; c.stroke(); }
     else if (item === 'striperug') { rr(c, x + 3, y + 3, w - 6, h - 6, 10); c.save(); c.clip(); c.fillStyle = '#fff1c4'; c.fillRect(x, y, w, h); var vert = h > w; for (var i = 0; i < 8; i++) { c.fillStyle = ['#9fd0f0', '#ffb3d6', '#b9e08c'][i % 3]; if (vert) c.fillRect(x, y + 6 + i * h / 8, w, h / 20); else c.fillRect(x + 6 + i * w / 8, y, w / 20, h); } c.restore(); rr(c, x + 3, y + 3, w - 6, h - 6, 10); A.stroke(c, l); }
     else if (item === 'heartrug') { var s = Math.min(w, h) * .5; c.beginPath(); c.moveTo(cx, cy + s * .8); c.bezierCurveTo(cx - s * 1.5, cy - s * .1, cx - s * .6, cy - s * 1.1, cx, cy - s * .35); c.bezierCurveTo(cx + s * .6, cy - s * 1.1, cx + s * 1.5, cy - s * .1, cx, cy + s * .8); fs(c, G(c, cx, cy, s, '#ffc4dc', '#ff86bd'), l); }
+    else if (item === 'starrug') { rr(c, x + 3, y + 3, w - 6, h - 6, Math.min(w, h) * .3); fs(c, G(c, cx, cy, w * .6, '#6a7ad0', '#3e4a96'), l); [[.3, .3, .1], [.68, .4, .14], [.4, .7, .09], [.72, .74, .07]].forEach(function (p) { star(c, x + p[0] * w, y + p[1] * h, Math.min(w, h) * p[2], '#ffe680', l * .7); });
+      ell(c, x + w * .22, y + h * .7, w * .08, w * .08); fs(c, '#fffbe0', l * .7); }
     else if (item === 'stonepath') { [[.3, .32, .22], [.7, .4, .2], [.45, .72, .22]].forEach(function (p) { ell(c, x + p[0] * w, y + p[1] * h, p[2] * w, p[2] * h * .7); fs(c, G(c, x + p[0] * w, y + p[1] * h, p[2] * w, '#e2dfe9', '#a8a2b8'), l); }); }
   }
   function draw(c, item, x, y, cs, r, t) {
@@ -1318,7 +1474,10 @@ body.touch.roam #touch-ui { display: block; }
   var VW = 960, VH = 540, scale = 1, dpr = 1, SL = 8, SR = 8, ST = 0, SB = 0;
   var FONT = 'Chewy, "Comic Sans MS", sans-serif', INK = A.C.ink, CREAM = '#fff6e0', CREAM2 = '#f3e2bd';
   var store; try { store = window.localStorage; } catch (e) { store = { getItem: function () { return null; }, setItem: function () {} }; }
-  var state = L.load(store) || L.newState(), hasSave = !!L.load(store);
+  // Grown-Ups Shop entitlements (test adapter: local only, no payments). Must be wired before the save loads.
+  var Store = window.StoreModule.create({ storage: store }); L.setOwns(Store.owns);
+  var state = L.load(store) || L.newState(), hasSave = !!L.load(store); L.syncPremium(state);
+  var gate = null, gu = { tab: 'world', confirm: null, msg: null }, guFrom = null;
   var screen = 'title', overlay = null, dlg = null, buttons = [], time = 0, toast = null, fx = [], hintTier = {}, digAnim = null, cheer = 0, netAnim = null, fishing = null;
   var player = { x: state.pos.x, y: state.pos.y, dir: state.dir, moving: false, t: 0 };
   var cam = { x: 0, y: 0 }, camInit = false, houseCool = 0, autosave = 8, titleButtons = [], hourOverride = null, ed = null, shopTab = 'buy', bookTab = 'collect', page = 0, noodleLine = 0;
@@ -1350,7 +1509,7 @@ body.touch.roam #touch-ui { display: block; }
   function button(x, y, w, h, label, fn, col, px, disabled) {
     var hot = disabled ? '#ddd3c4' : col || '#ffb3d6'; A.rr(c, x, y + 5, w, h, Math.min(h / 2, 30)); c.fillStyle = 'rgba(46,33,64,.3)'; c.fill();
     A.rr(c, x, y, w, h, Math.min(h / 2, 30)); var g = c.createLinearGradient(0, y, 0, y + h); g.addColorStop(0, '#fffaf0'); g.addColorStop(1, hot); c.fillStyle = g; c.fill(); c.lineWidth = 4; c.strokeStyle = INK; c.stroke();
-    fitText(label, x + w / 2, y + h / 2 + 1, px || 30, w - 20, disabled ? 'rgba(46,33,64,.45)' : INK, 'center'); if (!disabled) buttons.push({ x: x, y: y, w: w, h: h, fn: fn });
+    fitText(label, x + w / 2, y + h / 2 + 1, px || 30, w - 20, disabled ? 'rgba(46,33,64,.45)' : INK, 'center'); if (!disabled) buttons.push({ x: x, y: y, w: w, h: h, fn: fn, label: label });
   }
   function roundBtn(x, y, r, icon, fn) {
     A.ell(c, x, y + 4, r, r); c.fillStyle = 'rgba(46,33,64,.3)'; c.fill(); A.ell(c, x, y, r, r); c.fillStyle = CREAM; c.fill(); c.lineWidth = 4; c.strokeStyle = INK; c.stroke();
@@ -1393,6 +1552,7 @@ body.touch.roam #touch-ui { display: block; }
     Wd.NPCS.forEach(function (n) { if (!night()) list.push({ x: n.x, y: n.y, r: 75, label: 'Talk', fn: function () { talk(n); } }); else { var b = Wd.BUILDINGS[n.id]; list.push({ x: b.door.x, y: b.door.y + 10, r: 75, label: 'Look', fn: function () { say([{ who: n.name.split(' ')[0], lines: ['Zzz... ' + n.name.split(' ')[0] + ' is fast asleep.', 'Neighbors wake up in the morning.'], npc: n.id }]); } }); } });
     list.push({ x: Wd.BUILDINGS.treehouse.door.x, y: Wd.BUILDINGS.treehouse.door.y + 10, r: 70, label: 'Enter', fn: enterHouse });
     Object.keys(Wd.GATES).forEach(function (g) { var G = Wd.GATES[g]; if (!L.areaUnlocked(state, G.area)) list.push({ x: G.x + (G.horiz ? 0 : -60), y: G.y + (G.horiz ? -50 : 0), r: 90, label: 'Look', fn: function () { say([{ who: 'Thorny Brambles', lines: [g === 'meadow' ? 'Thick brambles block the way south.' : 'Twisty blue brambles block the way east.', g === 'meadow' ? 'Grandpa Oak says they open for whoever finds the Golden Acorn.' : 'They say the Moon Pearl opens the Glimmer Grove.'] }]); } }); });
+    var GG = Wd.GATES.grove; if (!L.areaOwned('grove')) list = list.filter(function (it) { return !(it.label === 'Look' && Math.abs(it.x - (GG.x - 60)) < 2 && Math.abs(it.y - GG.y) < 2); }).concat([{ x: GG.x - 60, y: GG.y, r: 90, label: 'Look', fn: function () { say([{ who: 'Glimmer Grove', lines: ['A new world awaits beyond the blue brambles!', 'Ask a grown-up in the Grown-Ups Shop.'] }]); } }]);
     spawns.forEach(function (s) { if (!L.areaUnlocked(state, s.area)) return; list.push({ x: s.x, y: s.y, r: 52, label: s.kind === 'bug' ? 'Catch' : 'Pick up', fn: function () { pick(s); } }); });
     return list;
   }
@@ -1479,7 +1639,7 @@ body.touch.roam #touch-ui { display: block; }
     time += dt; if (toast && (toast.life -= dt) <= 0) toast = null; cheer = Math.max(0, cheer - dt);
     fx = fx.filter(function (p) { p.life -= dt; p.x += p.vx * dt; p.y += p.vy * dt; p.vy += 260 * dt; return p.life > 0; });
     if (I.take('mute')) toggleMute();
-    if (screen === 'title') { if (I.take('act')) startGame(); return; }
+    if (screen === 'title') { if (I.take('act') && !overlay) startGame(); return; }
     if (dlg) { dlg.t += dt; var pg = dlg.pages[dlg.i]; if (!pg.choices && (I.take('act') || I.take('back'))) advance(); else if (pg.choices && I.take('back')) { dlg = null; } I.take('book'); I.take('hint'); return; }
     if (overlay) { if (I.take('back')) overlay = null; I.take('act'); I.take('book'); return; }
     if (screen === 'house' || screen === 'yardedit') { if (I.take('back')) { if (ed && (ed.held || ed.sel)) { ed.held = null; ed.sel = null; } else exitEdit(); } I.take('act'); return; }
@@ -1527,8 +1687,9 @@ body.touch.roam #touch-ui { display: block; }
     I.setRoam(screen === 'play' && !dlg && !overlay && !digAnim && !netAnim);
     c.setTransform(scale * dpr, 0, 0, scale * dpr, 0, 0); c.imageSmoothingEnabled = true;
     if (screen === 'title') drawTitle(); else if (screen === 'house') drawHouse(); else drawWorld();
+    if (screen === 'play' && !dlg && !overlay && !fishing && nearGroveGate()) groveSign();
     if (dlg) drawDialog();
-    if (overlay === 'book') drawBook(); else if (overlay === 'menu') drawMenu(); else if (overlay === 'shop') drawShop(); else if (overlay === 'board') drawBoard(); else if (overlay === 'map') drawMap();
+    if (overlay === 'book') drawBook(); else if (overlay === 'menu') drawMenu(); else if (overlay === 'shop') drawShop(); else if (overlay === 'board') drawBoard(); else if (overlay === 'map') drawMap(); else if (overlay === 'gate') drawGate(); else if (overlay === 'grownups') drawGrownUps(); else if (overlay === 'wardrobe') drawWardrobe();
     if (toast) { c.globalAlpha = Math.min(1, toast.life * 2); var w = Math.max(260, (c.font = font(30), c.measureText(toast.t).width + 60)); panel(VW / 2 - w / 2, 92 + ST, w, 56, 28); text(toast.t, VW / 2, 121 + ST, 30, INK, 'center'); c.globalAlpha = 1; }
   }
   function drawWorld() {
@@ -1619,7 +1780,7 @@ body.touch.roam #touch-ui { display: block; }
     var anim = digAnim ? 'dig' : cheer > 0 ? 'happy' : player.moving ? 'walk' : 'idle', s = .74, v = DIRV[player.dir];
     var trophy = anim === 'happy' && ((state.bag.goldenAcorn && !state.hunts.acorn.placed) || (state.bag.moonPearl && !state.hunts.pearl.placed));
     if (night() && hasLantern() && player.dir !== 'down') drawLantern();
-    A.rebecca(c, player.x, player.y, { dir: anim === 'happy' ? 'down' : player.dir, anim: anim, t: digAnim ? digAnim.t : anim === 'walk' ? player.t : time, scale: s, holdAcorn: trophy });
+    A.rebecca(c, player.x, player.y, { dir: anim === 'happy' ? 'down' : player.dir, anim: anim, t: digAnim ? digAnim.t : anim === 'walk' ? player.t : time, scale: s, holdAcorn: trophy, outfit: L.outfitOf(state) });
     if (night() && hasLantern() && player.dir === 'down') drawLantern();
     if (fishing) { var hx = player.x + v[0] * 12, hy = player.y - 30; c.beginPath(); c.moveTo(hx, hy); c.lineTo(hx + v[0] * 40 + (v[0] ? 0 : 18), hy - 46 + v[1] * 10); c.lineWidth = 6; c.strokeStyle = INK; c.lineCap = 'round'; c.stroke(); c.lineWidth = 3; c.strokeStyle = '#c08a52'; c.stroke(); }
     if (netAnim) { var k = netAnim.t / .45, a = -1.2 + k * 2.4; c.save(); c.translate(player.x, player.y - 34); c.rotate(a + (player.dir === 'left' ? Math.PI : 0)); c.beginPath(); c.moveTo(0, 0); c.lineTo(44, 0); c.lineWidth = 5; c.strokeStyle = INK; c.stroke(); c.lineWidth = 2.5; c.strokeStyle = '#c08a52'; c.stroke(); A.ell(c, 56, 0, 13, 10); c.fillStyle = 'rgba(255,255,255,.6)'; c.fill(); c.lineWidth = 2.5; c.strokeStyle = INK; c.stroke(); c.restore(); }
@@ -1685,12 +1846,13 @@ body.touch.roam #touch-ui { display: block; }
   }
   function drawMenu() {
     c.fillStyle = 'rgba(46,33,64,.45)'; c.fillRect(0, 0, VW, VH);
-    var w = 520, h = 390, x = (VW - w) / 2, y = (VH - h) / 2; panel(x, y, w, h, 28);
-    text('Paused', VW / 2, y + 46, 40, '#7a52b8', 'center');
-    button(x + 50, y + 84, w - 100, 60, 'Keep Exploring', function () { overlay = null; S.play('tap'); });
-    button(x + 50, y + 156, w - 100, 60, 'Explorer Help: ' + modeName(state.mode), cycleMode, '#cfe8b4');
-    button(x + 50, y + 228, w - 100, 60, state.muted ? 'Sound: Off' : 'Sound: On', toggleMute, '#bfdcf5');
-    button(x + 50, y + 300, w - 100, 60, 'Title Screen', function () { save(); overlay = null; screen = 'title'; }, '#f3e2bd');
+    var w = Math.min(680, VW - 40), h = 330, x = (VW - w) / 2, y = (VH - h) / 2, bw = (w - 116) / 2; panel(x, y, w, h, 28);
+    text('Paused', VW / 2, y + 44, 40, '#7a52b8', 'center');
+    button(x + 50, y + 80, w - 100, 60, 'Keep Exploring', function () { overlay = null; S.play('tap'); });
+    button(x + 50, y + 152, bw, 60, 'Help: ' + modeName(state.mode), cycleMode, '#cfe8b4', 28);
+    button(x + 66 + bw, y + 152, bw, 60, state.muted ? 'Sound: Off' : 'Sound: On', toggleMute, '#bfdcf5', 28);
+    button(x + 50, y + 224, bw, 60, 'Grown-Ups Shop', function () { openGate(); }, '#e8dcf5', 28);
+    button(x + 66 + bw, y + 224, bw, 60, 'Title Screen', function () { save(); overlay = null; screen = 'title'; }, '#f3e2bd', 28);
   }
   function cycleMode() { var m = L.MODES; state.mode = m[(m.indexOf(state.mode) + 1) % m.length]; save(); S.play('tap'); showToast({ guided: 'Guided: paw markers show the way', independent: 'Independent: use the hint button', master: 'Master: no hints at all!' }[state.mode]); }
   function meter(x, y, w, ratio, sense) { // fair-price meter: where this price sits vs the usual value
@@ -1756,7 +1918,7 @@ body.touch.roam #touch-ui { display: block; }
     function mark(x, y, col, label) { var px = ox + x * s, py = oy + y * s; A.ell(c, px, py, 9, 9); c.fillStyle = col; c.fill(); c.lineWidth = 3; c.strokeStyle = INK; c.stroke(); if (label) text(label, px, py - 22, 24, INK, 'center', 0); }
     areas.forEach(function (a) { var un = L.areaUnlocked(state, a[0]); text(un ? a[6] : '???', ox + (a[1] + a[3] / 2) * s, oy + (a[2] + a[4] / 2) * s + (a[0] === 'village' ? 60 : 0), 28, un ? INK : 'rgba(46,33,64,.6)', 'center'); });
     mark(Wd.BUILDINGS.treehouse.x, Wd.BUILDINGS.treehouse.y, '#ff86bd', 'Home'); mark(Wd.BUILDINGS.shop.x, Wd.BUILDINGS.shop.y, '#5fc49a', 'Shop');
-    var px = ox + player.x * s, py = oy + player.y * s, b = Math.sin(time * 5) * 2; A.rebecca(c, px, py + 10 + b, { dir: 'down', anim: 'idle', t: time, scale: .32 });
+    var px = ox + player.x * s, py = oy + player.y * s, b = Math.sin(time * 5) * 2; A.rebecca(c, px, py + 10 + b, { dir: 'down', anim: 'idle', t: time, scale: .32 , outfit: L.outfitOf(state) });
   }
   function drawTitle() {
     var g = c.createLinearGradient(0, 0, 0, VH), nt = night(); g.addColorStop(0, nt ? '#3a3f7a' : '#bfe6f2'); g.addColorStop(.55, nt ? '#6a5f9a' : '#e8f5d8'); g.addColorStop(.56, nt ? '#5f8f5a' : '#a9d67f'); g.addColorStop(1, nt ? '#4f7f4a' : '#86c065'); c.fillStyle = g; c.fillRect(0, 0, VW, VH);
@@ -1764,13 +1926,14 @@ body.touch.roam #touch-ui { display: block; }
     [[60, VH * .61, .9, 0], [VW - 70, VH * .63, 1, 1], [VW - 190, VH * .56, .75, 2], [190, VH * .56, .7, 1]].forEach(function (t) { Wd.drawTree(c, { x: t[0], y: t[1], s: t[2], v: t[3] }, 1); });
     c.fillStyle = '#e6cc96'; c.beginPath(); c.moveTo(VW * .5 - 60, VH); c.quadraticCurveTo(VW * .5, VH * .7, VW * .5 + 30, VH * .56); c.lineTo(VW * .5 + 60, VH * .56); c.quadraticCurveTo(VW * .5 + 30, VH * .7, VW * .5 + 90, VH); c.fill();
     Wd.item(c, nt ? 'firefly' : 'butterfly', 250 + Math.sin(time) * 40, VH * .7 + Math.cos(time * 1.3) * 20, time, 1.6);
-    var rs = VH / 540 * (VW / VH < 1.6 ? 1.45 : 2.0); A.rebecca(c, VW * .5, VH - 40, { dir: 'down', anim: Math.floor(time / 4) % 3 === 2 ? 'happy' : 'idle', t: time, scale: rs });
+    var rs = VH / 540 * (VW / VH < 1.6 ? 1.45 : 2.0); A.rebecca(c, VW * .5, VH - 40, { dir: 'down', anim: Math.floor(time / 4) % 3 === 2 ? 'happy' : 'idle', t: time, scale: rs, outfit: L.outfitOf(state) });
     text('Rebecca the Raccoon', VW / 2, 62 + ST, Math.min(66, VW / 13), '#ff9ccb', 'center', 12);
     text('and the Golden Acorn', VW / 2, 116 + ST, 34, CREAM, 'center', 8);
     var gap = 80 * rs, colW = Math.min(300, VW / 2 - gap - SL - 24), lx = Math.max(SL + 24, VW / 2 - gap - colW - 40), rx = VW - lx - colW, by = VH - SB - 30;
     button(lx, by - 150, colW, 84, hasSave && state.seenIntro ? 'Continue' : 'Play', startGame, '#ffb3d6', 42);
     button(rx, by - 150, colW, 66, 'Help: ' + modeName(state.mode), cycleMode, '#cfe8b4', 30);
     button(rx, by - 70, colW, 66, state.muted ? 'Sound: Off' : 'Sound: On', toggleMute, '#bfdcf5', 30);
+    button(lx + 30, by - 52, colW - 60, 52, 'Grown-Ups', function () { openGate(); }, '#e8dcf5', 28);
     titleButtons = buttons.slice();
   }
 
@@ -1804,12 +1967,13 @@ body.touch.roam #touch-ui { display: block; }
       list.forEach(function (p) { if (dragging === p.id) c.globalAlpha = .35; D.draw(c, p.item, gg.x + p.x * gg.cs, gg.y + p.y * gg.cs, gg.cs, p.r, time); c.globalAlpha = 1;
         if (ph === 'night' && L.ITEMS[p.item].light) { c.save(); c.globalCompositeOperation = 'lighter'; var lg = c.createRadialGradient(gg.x + (p.x + .5) * gg.cs, gg.y + p.y * gg.cs, 0, gg.x + (p.x + .5) * gg.cs, gg.y + p.y * gg.cs, gg.cs * 1.6); lg.addColorStop(0, 'rgba(255,210,120,.3)'); lg.addColorStop(1, 'rgba(255,210,120,0)'); c.fillStyle = lg; c.fillRect(gg.x + (p.x - 2) * gg.cs, gg.y + (p.y - 2) * gg.cs, gg.cs * 5, gg.cs * 5); c.restore(); } }); }
     drawGrid('wall'); drawGrid('loft'); drawGrid('floor');
-    if (!ed) A.rebecca(c, x0 + 7.5 * cs, fy + 4.6 * cs, { dir: 'down', anim: cheer > 0 ? 'happy' : 'idle', t: time, scale: cs / 60 });
+    if (!ed) A.rebecca(c, x0 + 7.5 * cs, fy + 4.6 * cs, { dir: 'down', anim: cheer > 0 ? 'happy' : 'idle', t: time, scale: cs / 60, outfit: L.outfitOf(state) });
     if (ph === 'night') { c.fillStyle = 'rgba(30,30,80,.18)'; c.fillRect(0, 0, VW, VH); }
     if (ed) { ['wall', 'loft', 'floor'].forEach(function (n) { drawGridOverlay(n, G[n]); }); drawTray('room', 250); drawEditBar('Decorate Your Treehouse'); return; }
     c.save(); c.translate(SL, ST); panel(14, 14, 400, 64, 20); text("Rebecca's Treehouse", 32, 47, 30, '#7a52b8'); c.restore();
     button(VW - SR - 200, 18 + ST, 186, 58, 'Go Outside', function () { screen = 'play'; save(); S.play('tap'); }, '#cfe8b4', 28);
     button(VW - SR - 410, 18 + ST, 196, 58, 'Decorate', function () { enterEdit('room'); }, '#ffb3d6', 28);
+    button(SL + 20, VH - SB - 78, 210, 60, 'Wardrobe', function () { overlay = 'wardrobe'; S.play('page'); }, '#bfdcf5', 28);
   }
   function enterEdit(area) { ed = { area: area, held: null, sel: null, scroll: 0, hx: -1, hy: -1 }; screen = area === 'room' ? 'house' : 'yardedit'; S.play('page'); }
   function exitEdit() { save(); if (screen === 'yardedit') { screen = 'play'; camInit = false; } ed = null; S.play('tap'); }
@@ -1864,6 +2028,121 @@ body.touch.roam #touch-ui { display: block; }
     else text('Tap your things, or tap a placed item to move it', x, y + 26, 28, '#fff6e0', 'left', 6);
   }
 
+
+  /* ---------- Grown-Ups Shop (parent gate + catalog). Test mode: no payments, entitlements are local. ---------- */
+  function newProblem() { var a = 12 + ((Math.random() * 8) | 0), b = 3 + ((Math.random() * 7) | 0); return { a: a, b: b, ans: a * b }; }
+  function openGate() { gate = { p: newProblem(), input: '', tries: 0, msg: '' }; guFrom = screen; overlay = 'gate'; S.play('page'); }
+  function gateKey(k) {
+    S.play('tap');
+    if (k === 'del') { gate.input = gate.input.slice(0, -1); return; }
+    if (k === 'ok') {
+      if (+gate.input === gate.p.ans && gate.input !== '') { gate = null; overlay = 'grownups'; gu.confirm = null; gu.msg = null; return; }
+      gate.tries++; gate.input = ''; gate.p = newProblem(); gate.msg = 'Not quite. Here is a new one.';
+      if (gate.tries >= 3) { gate = null; overlay = null; } return;
+    }
+    if (gate.input.length < 3) gate.input += k;
+  }
+  function drawGate() {
+    c.fillStyle = 'rgba(46,33,64,.55)'; c.fillRect(0, 0, VW, VH);
+    var w = Math.min(820, VW - 40), h = Math.min(400, VH - 30 - ST - SB), x = (VW - w) / 2, y = (VH - h) / 2; panel(x, y, w, h, 28);
+    buttons.push({ x: 0, y: 0, w: VW, h: VH, fn: function () {} });
+    var P = { x: x, y: y, w: w, h: h }; closeBtn(P);
+    text('For Grown-Ups', x + 34, y + 44, 36, '#7a52b8');
+    var lw = w * .46; wrap('Please solve this to open the Grown-Ups Shop.', lw - 40, 28).forEach(function (l, i) { text(l, x + 34, y + 96 + i * 34, 28, INK); });
+    text(gate.p.a + ' × ' + gate.p.b + ' = ?', x + 34, y + h * .55, 46, '#a8425f');
+    A.rr(c, x + 34, y + h * .55 + 34, lw - 60, 62, 16); c.fillStyle = '#fffdf6'; c.fill(); c.lineWidth = 3; c.strokeStyle = INK; c.stroke();
+    text(gate.input || ' ', x + 34 + (lw - 60) / 2, y + h * .55 + 66, 40, INK, 'center');
+    if (gate.msg) text(gate.msg, x + 34, y + h - 30, 28, '#a8425f');
+    var keys = ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'del', '0', 'ok'], kx = x + lw + 10, ky = y + 74, kw = (w - lw - 50) / 3 - 10, kh = Math.min(64, (h - 100) / 4 - 10);
+    keys.forEach(function (k, i) { var bx = kx + (i % 3) * (kw + 10), by = ky + Math.floor(i / 3) * (kh + 10);
+      button(bx, by, kw, kh, k === 'del' ? '⌫' : k === 'ok' ? 'OK' : k, function () { gateKey(k); }, k === 'ok' ? '#cfe8b4' : k === 'del' ? '#f3e2bd' : '#fffaf0', 32); });
+  }
+  var GU_TABS = [['world', 'Worlds'], ['season', 'Seasonal'], ['cosmetic', 'Outfits & Decor'], ['bundle', 'Bundle'], ['pass', 'Pass']];
+  function productIcon(p, cx, cy, sz) {
+    c.save(); if (p.soon) c.globalAlpha = .45;
+    var u = sz / 100;
+    if (p.icon === 'grove') { [[-24, 10, 20, 54, '#8fe3e6', '#3fa7b8'], [14, 14, 18, 44, '#c9a6ec', '#8a5fc8'], [-4, 0, 22, 66, '#b8f0ff', '#5fb6d8']].forEach(function (k) { var x = cx + k[0] * u, y = cy + 30 * u, hw = k[2] * u, hh = k[3] * u;
+        c.beginPath(); c.moveTo(x - hw, y); c.lineTo(x - hw, y - hh * .7); c.lineTo(x, y - hh); c.lineTo(x + hw, y - hh * .7); c.lineTo(x + hw, y); c.closePath(); A.fillStroke(c, A.lgrad(c, y - hh, y, k[4], k[5]), 3); c.fillStyle = 'rgba(255,255,255,.55)'; c.fillRect(x - hw * .5, y - hh * .7, hw * .3, hh * .5); });
+      c.fillStyle = '#fff6a0'; A.star(c, cx + 30 * u, cy - 30 * u, 7 * u); A.star(c, cx - 36 * u, cy - 22 * u, 5 * u); }
+    else if (p.icon === 'shore') { c.beginPath(); c.moveTo(cx, cy + 30 * u); for (var i = 0; i <= 8; i++) { var a = Math.PI + i / 8 * Math.PI; c.lineTo(cx + Math.cos(a) * 40 * u, cy + 20 * u + Math.sin(a) * 44 * u); } c.closePath(); A.fillStroke(c, A.lgrad(c, cy - 30 * u, cy + 30 * u, '#ffd8c8', '#f0a08a'), 3);
+      for (i = 1; i < 8; i++) { var a2 = Math.PI + i / 8 * Math.PI; c.beginPath(); c.moveTo(cx, cy + 30 * u); c.lineTo(cx + Math.cos(a2) * 34 * u, cy + 20 * u + Math.sin(a2) * 38 * u); A.stroke(c, 2); } }
+    else if (p.icon === 'peak') { c.beginPath(); c.moveTo(cx - 46 * u, cy + 30 * u); c.lineTo(cx - 6 * u, cy - 34 * u); c.lineTo(cx + 46 * u, cy + 30 * u); c.closePath(); A.fillStroke(c, A.lgrad(c, cy - 34 * u, cy + 30 * u, '#b9c4dc', '#7f8cb0'), 3);
+      c.beginPath(); c.moveTo(cx - 20 * u, cy - 12 * u); c.lineTo(cx - 6 * u, cy - 34 * u); c.lineTo(cx + 10 * u, cy - 8 * u); c.lineTo(cx, cy - 14 * u); c.lineTo(cx - 10 * u, cy - 6 * u); c.closePath(); A.fillStroke(c, '#ffffff', 3); }
+    else if (p.icon === 'spooky') { D.icon(c, 'jackolantern', cx - 14 * u, cy + 2 * u, 70 * u, time); D.icon(c, 'cauldron', cx + 26 * u, cy + 8 * u, 50 * u, time); }
+    else if (p.icon === 'winter') { D.icon(c, 'snowman', cx - 12 * u, cy, 76 * u, time); c.fillStyle = '#e8f6ff'; A.star(c, cx + 32 * u, cy - 26 * u, 7 * u); }
+    else if (p.icon === 'safari' || p.icon === 'pajamas') A.rebecca(c, cx, cy + 46 * u, { dir: 'down', t: time, scale: .82 * u, outfit: p.icon });
+    else if (p.icon === 'starry') D.icon(c, 'starbed', cx, cy, 90 * u, time);
+    else if (p.icon === 'everything') { A.rr(c, cx - 36 * u, cy - 14 * u, 72 * u, 50 * u, 8); A.fillStroke(c, A.lgrad(c, cy - 14 * u, cy + 36 * u, '#ffb3d6', '#e07aaa'), 3); A.rr(c, cx - 40 * u, cy - 26 * u, 80 * u, 16 * u, 6); A.fillStroke(c, '#ff9ccb', 3);
+      c.fillStyle = '#ffd36e'; c.fillRect(cx - 6 * u, cy - 26 * u, 12 * u, 62 * u); A.bow(c, cx, cy - 30 * u, 1.4 * u, 0); }
+    else if (p.icon === 'pass') { A.rr(c, cx - 44 * u, cy - 26 * u, 88 * u, 52 * u, 10); A.fillStroke(c, A.lgrad(c, cy - 26 * u, cy + 26 * u, '#fff2a0', '#e0a92a'), 3); c.setLineDash([5, 5]); c.beginPath(); c.moveTo(cx + 18 * u, cy - 22 * u); c.lineTo(cx + 18 * u, cy + 22 * u); A.stroke(c, 2); c.setLineDash([]);
+      c.fillStyle = '#ff86bd'; A.star(c, cx - 12 * u, cy, 16 * u); }
+    c.restore();
+  }
+  function drawGrownUps() {
+    var P = sheet(''); buttons.pop(); buttons.push({ x: 0, y: 0, w: VW, h: VH, fn: function () {} });
+    tabs(P, GU_TABS, gu.tab, function (t) { gu.tab = t; }, P.x + 22); closeBtn(P);
+    var list = Store.list(gu.tab), n = 3, gap = 16, cw = (P.w - 44 - gap * (n - 1)) / n, cy0 = P.y + 78, ch = P.h - 78 - 74, x0 = P.x + 22 + (n - list.length) * (cw + gap) / 2;
+    list.forEach(function (p, i) { var x = x0 + i * (cw + gap), st = Store.status(p.id), owned = st === 'owned';
+      A.rr(c, x, cy0, cw, ch, 18); c.fillStyle = p.soon ? '#ece6dc' : owned ? '#eaf6dc' : '#fffdf6'; c.fill(); c.lineWidth = 3; c.strokeStyle = 'rgba(46,33,64,.35)'; c.stroke();
+      var isz = Math.min(100, ch - 200); productIcon(p, x + cw / 2, cy0 + 6 + isz / 2, isz);
+      var ty = cy0 + 14 + isz; fitText(p.title, x + cw / 2, ty + 6, 28, cw - 20, p.soon ? 'rgba(46,33,64,.5)' : INK, 'center');
+      var lines = wrap(p.desc, cw - 28, 28), room = Math.max(1, Math.floor((ch - (ty - cy0) - 88) / 30)); lines.slice(0, room).forEach(function (l, j) { text(l, x + cw / 2, ty + 36 + j * 30, 28, p.soon ? 'rgba(46,33,64,.45)' : '#5e4a6e', 'center'); });
+      if (p.kind === 'bundle' && !owned) { var sv = Store.bundleSavings(); text('Save ' + sv.pct + '%', x + cw - 16, cy0 + 24, 28, '#3f8a3c', 'right'); }
+      var by = cy0 + ch - 60;
+      if (p.soon) button(x + 14, by, cw - 28, 50, 'Coming Soon', null, '#ddd', 28, true);
+      else if (owned) button(x + 14, by, cw - 28, 50, Store.hasPass() && !Store.ownedIds().some(function (k) { return k === p.id; }) && p.kind !== 'pass' ? 'Included' : 'Owned', null, '#cfe8b4', 28, true);
+      else button(x + 14, by, cw - 28, 50, p.price, function () { gu.confirm = p.id; S.play('page'); }, '#ffd36e', 30);
+    });
+    var fy = P.y + P.h - 58;
+    A.rr(c, P.x + 22, fy, 380, 46, 23); c.fillStyle = '#ffe9a8'; c.fill(); c.lineWidth = 2.5; c.strokeStyle = INK; c.stroke(); text('Test mode: no real charges', P.x + 212, fy + 24, 28, INK, 'center');
+    button(P.x + P.w - 470, fy - 4, 220, 52, 'Restore', function () { Store.restore().then(function () { L.syncPremium(state); save(); showToast('Purchases restored'); }); }, '#bfdcf5', 28);
+    button(P.x + P.w - 238, fy - 4, 216, 52, 'Reset (test)', function () { Store.reset(); if (!L.canWear(state.outfit)) state.outfit = 'classic'; save(); showToast('Test purchases cleared'); }, '#f3e2bd', 28);
+    if (gu.confirm) drawConfirm(Store.product(gu.confirm)); else if (gu.msg) drawGuMsg();
+  }
+  function drawConfirm(p) {
+    c.fillStyle = 'rgba(46,33,64,.5)'; c.fillRect(0, 0, VW, VH); buttons = [{ x: 0, y: 0, w: VW, h: VH, fn: function () {} }];
+    var w = Math.min(640, VW - 40), h = Math.min(360, VH - 40), x = (VW - w) / 2, y = (VH - h) / 2; panel(x, y, w, h, 28);
+    A.rr(c, x + w / 2 - 210, y + 22, 420, 50, 25); c.fillStyle = '#ffe9a8'; c.fill(); c.lineWidth = 3; c.strokeStyle = INK; c.stroke(); text('Test mode: no real charge', x + w / 2, y + 48, 28, '#a8425f', 'center');
+    productIcon(p, x + 90, y + 160, 110);
+    fitText('Unlock ' + p.title + '?', x + 170, y + 120, 32, w - 200, INK);
+    text(p.price + ' (not charged)', x + 170, y + 162, 28, '#5e4a6e');
+    wrap(p.kind === 'pass' ? 'Subscription placeholder. Unlocks everything in this test build.' : 'Unlocks on this device only. Nothing is paid.', w - 210, 28).slice(0, 2).forEach(function (l, i) { text(l, x + 170, y + 204 + i * 32, 28, '#5e4a6e'); });
+    button(x + 30, y + h - 82, (w - 80) / 2, 60, 'Cancel', function () { gu.confirm = null; S.play('tap'); }, '#f3e2bd', 30);
+    button(x + 50 + (w - 80) / 2, y + h - 82, (w - 80) / 2, 60, 'Unlock (Test)', function () { var id = p.id; gu.confirm = null;
+      Store.purchase(id).then(function (r) { if (r.status !== 'granted') { showToast('Nothing changed'); return; } var got = L.syncPremium(state); save(); S.play('fanfare');
+        gu.msg = { title: p.title + ' unlocked!', lines: got.length ? ['New in your bag: ' + got.map(function (k) { return L.ITEMS[k].name; }).join(', ') + '.'] : p.kind === 'world' ? ['Find the Moon Pearl to open the way to Glimmer Grove.'] : [] };
+        if (/outfit|pack|bundle|pass/.test(id)) gu.msg.lines.push('New outfits are in the treehouse Wardrobe.'); }); }, '#cfe8b4', 30);
+  }
+  function drawGuMsg() {
+    c.fillStyle = 'rgba(46,33,64,.5)'; c.fillRect(0, 0, VW, VH); buttons = [{ x: 0, y: 0, w: VW, h: VH, fn: function () {} }];
+    var w = Math.min(640, VW - 40), h = 300, x = (VW - w) / 2, y = (VH - h) / 2; panel(x, y, w, h, 28);
+    fitText(gu.msg.title, x + w / 2, y + 50, 36, w - 40, '#3f8a3c', 'center');
+    var ls = []; gu.msg.lines.forEach(function (l) { ls = ls.concat(wrap(l, w - 60, 28)); }); ls.slice(0, 4).forEach(function (l, i) { text(l, x + w / 2, y + 100 + i * 34, 28, INK, 'center'); });
+    button(x + w / 2 - 120, y + h - 80, 240, 60, 'Great!', function () { gu.msg = null; S.play('tap'); }, '#cfe8b4', 30);
+  }
+  function nearGroveGate() { var G = Wd.GATES.grove; return !L.areaOwned('grove') && Math.abs(player.x - (G.x - 200)) < 330 && Math.abs(player.y - G.y) < 420; }
+  function groveSign() { // gentle, non-blocking: only while Rebecca is near the Glimmer Grove gate
+    var w = 480, h = 96, x = VW / 2 - w / 2, y = VH - SB - h - 14; c.save();
+    A.rr(c, x, y + 5, w, h, 24); c.fillStyle = 'rgba(46,33,64,.25)'; c.fill();
+    A.rr(c, x, y, w, h, 24); A.fillStroke(c, A.lgrad(c, y, y + h, '#fffaf0', '#e8dcf5'), 4);
+    c.fillStyle = '#9fe0ea'; A.star(c, x + 24, y + 22, 9 + Math.sin(time * 3) * 2); A.star(c, x + w - 22, y + h - 22, 8 + Math.cos(time * 3) * 2); c.fillStyle = '#c9a6ec'; A.star(c, x + w - 26, y + 22, 6); A.star(c, x + 22, y + h - 22, 5);
+    text('A new world awaits!', VW / 2, y + 30, 32, '#7a52b8', 'center'); fitText('Ask a grown-up in the Grown-Ups Shop', VW / 2, y + 68, 28, w - 70, INK, 'center');
+    c.restore();
+  }
+  function drawWardrobe() {
+    var P = sheet('Wardrobe', '#3f7fb8'); closeBtn(P);
+    var ids = Object.keys(L.OUTFITS), n = ids.length, gap = 12, cw = (P.w - 40 - gap * (n - 1)) / n, y0 = P.y + 74, ch = P.h - 90;
+    ids.forEach(function (id, i) { var x = P.x + 20 + i * (cw + gap), can = L.canWear(id), on = L.outfitOf(state) === id;
+      A.rr(c, x, y0, cw, ch, 18); c.fillStyle = on ? '#ffe0ef' : can ? '#fffdf6' : '#ece6dc'; c.fill(); c.lineWidth = on ? 4 : 2.5; c.strokeStyle = on ? '#d9539a' : 'rgba(46,33,64,.35)'; c.stroke();
+      c.save(); if (!can) c.globalAlpha = .45; A.rebecca(c, x + cw / 2, y0 + ch * .58, { dir: 'down', t: time + i, scale: Math.min(cw / 80, ch / 230), outfit: id }); c.restore();
+      var nm2 = L.OUTFITS[id].name.split(' '); text(nm2[0], x + cw / 2, y0 + ch * .66, 28, INK, 'center'); if (nm2[1]) text(nm2.slice(1).join(' '), x + cw / 2, y0 + ch * .66 + 28, 28, INK, 'center');
+      if (on) button(x + 10, y0 + ch - 62, cw - 20, 52, 'Wearing', null, '#ffb3d6', 26, true);
+      else if (can) button(x + 10, y0 + ch - 62, cw - 20, 52, 'Wear', function () { L.wear(state, id); save(); cheer = 1; S.play('pick'); }, '#cfe8b4', 28);
+      else { c.fillStyle = 'rgba(46,33,64,.55)'; A.rr(c, x + cw / 2 - 12, y0 + 22, 24, 20, 5); c.fill(); c.beginPath(); c.arc(x + cw / 2, y0 + 22, 8, Math.PI, 0); c.lineWidth = 4; c.strokeStyle = 'rgba(46,33,64,.55)'; c.stroke();
+        fitText('Grown-Ups Shop', x + cw / 2, y0 + ch - 36, 28, cw - 16, 'rgba(46,33,64,.6)', 'center'); }
+    });
+  }
+
   /* ---------- pointer ---------- */
   function logical(e) { var r = cv.getBoundingClientRect(); return { x: (e.clientX - r.left) / r.width * VW, y: (e.clientY - r.top) / r.height * VH }; }
   cv.addEventListener('pointerdown', function (e) {
@@ -1887,7 +2166,7 @@ body.touch.roam #touch-ui { display: block; }
     screen: function (s) { if (s) screen = s; return screen; }, overlay: function (o, tab) { overlay = o; if (tab) { shopTab = tab; bookTab = tab; } page = 0; }, dlg: function () { return dlg; }, cheer: function (v) { cheer = v; }, blocked: Wd.blocked, digVisible: function (tid) { return L.canDig(state, tid || 'acorn'); }, setDigT: function (t) { if (digAnim) digAnim.t = t; },
     titleButtons: function () { return titleButtons.map(function (b) { return { x: b.x / VW, y: b.y / VH, w: b.w / VW, h: b.h / VH }; }); }, setHour: function (h) { hourOverride = h; }, phase: phase, fishing: function () { return fishing && fishing.st; }, forceBite: function () { if (fishing) { fishing.st = 'bite'; fishing.t = 0; } }, pressAct: function () { I.press('act'); },
     edit: function (area) { enterEdit(area); }, editState: function () { return ed; }, roomGeom: function () { var G = roomGeom(); return { floor: G.floor, wall: G.wall, loft: G.loft, VW: VW, VH: VH }; }, yardGeom: function () { return yardGeom().yard; }, hold: function (it) { ed.held = { item: it, r: 0 }; }, tapLogical: function (x, y) { for (var i = buttons.length - 1; i >= 0; i--) { var b = buttons[i]; if (x >= b.x && x <= b.x + b.w && y >= b.y && y <= b.y + b.h) { b.fn(x, y); return true; } } return false; },
-    clearToast: function () { toast = null; }, exitEdit: exitEdit, give: function (it, n) { L.addItem(state, it, n || 1); }, coins: function (n) { state.coins = n; }, save: save, spawns: function () { return spawns; } };
+    clearToast: function () { toast = null; }, exitEdit: exitEdit, store: function () { return Store; }, labels: function () { return buttons.filter(function (b) { return b.label; }).map(function (b) { return { label: b.label, x: b.x / VW, y: b.y / VH, w: b.w / VW, h: b.h / VH }; }); }, tapLabel: function (l) { for (var i = buttons.length - 1; i >= 0; i--) if (buttons[i].label === l) { buttons[i].fn(buttons[i].x, buttons[i].y); return true; } return false; }, gate: function () { return gate; }, gu: function () { return gu; }, openGate: openGate, wear: function (o) { return L.wear(state, o); }, give: function (it, n) { L.addItem(state, it, n || 1); }, coins: function (n) { state.coins = n; }, save: save, spawns: function () { return spawns; } };
 })();
 
 </script>
