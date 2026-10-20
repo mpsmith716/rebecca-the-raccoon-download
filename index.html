@@ -11,11 +11,13 @@ html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
 #wrap { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; }
 #game { display: block; touch-action: none; }
 #touch-ui { display: none; }
-body.touch #touch-ui { display: block; }
+/* Joystick + action button exist only during free roam (body.roam); on title/menus/panels they are display:none so they never catch taps. */
+body.touch.roam #touch-ui { display: block; }
+#safe-probe { position: fixed; visibility: hidden; pointer-events: none; padding: env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px); }
 #stick-zone { position: fixed; left: 0; bottom: 0; width: 45vw; height: 65vh; z-index: 10; touch-action: none; }
-#stick-base { position: absolute; left: max(22px, 4vw); bottom: max(22px, 6vh); width: min(36vmin, 180px); height: min(36vmin, 180px); border-radius: 50%; background: rgba(255,246,224,.35); border: 4px solid rgba(46,33,64,.6); }
+#stick-base { position: absolute; left: max(22px, 4vw, calc(env(safe-area-inset-left) + 12px)); bottom: max(22px, 6vh, calc(env(safe-area-inset-bottom) + 12px)); width: min(36vmin, 180px); height: min(36vmin, 180px); border-radius: 50%; background: rgba(255,246,224,.35); border: 4px solid rgba(46,33,64,.6); }
 #stick-knob { position: absolute; left: 50%; top: 50%; width: 46%; height: 46%; margin: -23% 0 0 -23%; border-radius: 50%; background: #fff6e0; border: 4px solid #2e2140; box-shadow: 0 4px 0 rgba(46,33,64,.35); }
-#act-btn { position: fixed; right: max(24px, 4vw); bottom: max(26px, 7vh); z-index: 10; width: min(30vmin, 150px); height: min(30vmin, 150px); border-radius: 50%; border: 5px solid #2e2140; background: radial-gradient(circle at 40% 35%, #ffd0e6, #ff86bd); color: #2e2140; font-family: 'Chewy', sans-serif; font-size: min(7vmin, 34px); box-shadow: 0 6px 0 rgba(46,33,64,.4); touch-action: none; padding: 0; }
+#act-btn { position: fixed; right: max(24px, 4vw, calc(env(safe-area-inset-right) + 12px)); bottom: max(26px, 7vh, calc(env(safe-area-inset-bottom) + 12px)); z-index: 10; width: min(30vmin, 150px); height: min(30vmin, 150px); border-radius: 50%; border: 5px solid #2e2140; background: radial-gradient(circle at 40% 35%, #ffd0e6, #ff86bd); color: #2e2140; font-family: 'Chewy', sans-serif; font-size: min(7vmin, 34px); box-shadow: 0 6px 0 rgba(46,33,64,.4); touch-action: none; padding: 0; }
 #act-btn.on { transform: translateY(4px); box-shadow: 0 2px 0 rgba(46,33,64,.4); }
 
 </style>
@@ -808,11 +810,16 @@ body.touch #touch-ui { display: block; }
     var x = (down.right ? 1 : 0) - (down.left ? 1 : 0) + stick.x, y = (down.down ? 1 : 0) - (down.up ? 1 : 0) + stick.y, m = Math.hypot(x, y);
     if (m > 1) { x /= m; y /= m; } return { x: x, y: y };
   }
+  var roam = false;
+  function setRoam(on) {
+    if (on === roam) return; roam = on; document.body.classList.toggle('roam', on);
+    if (!on) { stick.x = stick.y = 0; stick.on = false; var k = document.getElementById('stick-knob'); if (k) k.style.transform = ''; } // drop any held direction
+  }
   function take(a) { var p = !!pressed[a]; pressed[a] = false; return p; }
   function clear() { pressed = {}; }
   function setLabel(t) { if (actBtn && actBtn.firstChild.textContent !== t) actBtn.firstChild.textContent = t; }
   function showAct(on) { if (actBtn) actBtn.style.visibility = on ? 'visible' : 'hidden'; }
-  global.Input = { setup: setup, axis: axis, take: take, clear: clear, setLabel: setLabel, showAct: showAct, press: function (a) { pressed[a] = true; }, isTouch: function () { return touch; } };
+  global.Input = { setup: setup, setRoam: setRoam, isRoam: function () { return roam; }, axis: axis, take: take, clear: clear, setLabel: setLabel, showAct: showAct, press: function (a) { pressed[a] = true; }, isTouch: function () { return touch; } };
 })(window);
 
 </script>
@@ -822,7 +829,7 @@ body.touch #touch-ui { display: block; }
   'use strict';
   var A = window.Art, Wd = window.World, L = window.Logic, S = window.Sound, I = window.Input;
   var cv = document.getElementById('game'), c = cv.getContext('2d');
-  var VW = 960, VH = 540, scale = 1, dpr = 1;
+  var VW = 960, VH = 540, scale = 1, dpr = 1, SL = 8, SR = 8, ST = 0, SB = 0;
   var FONT = 'Chewy, "Comic Sans MS", sans-serif', INK = A.C.ink, CREAM = '#fff6e0', CREAM2 = '#f3e2bd';
   var store; try { store = window.localStorage; } catch (e) { store = { getItem: function () { return null; }, setItem: function () {} }; }
   var state = L.load(store) || L.newState(), hasSave = !!L.load(store);
@@ -831,9 +838,14 @@ body.touch #touch-ui { display: block; }
   var cam = { x: 0, y: 0 };
   S.setMuted(state.muted);
 
+  var safeProbe = document.createElement('div'); safeProbe.id = 'safe-probe'; document.body.appendChild(safeProbe);
   function resize() {
-    var w = innerWidth, h = innerHeight; VH = 540; VW = Math.round(Math.max(760, Math.min(1240, VH * w / h)));
+    // Short (phone-landscape) screens use a smaller logical height so 28px text renders at >= 24 CSS px on a 390px-tall phone.
+    var w = innerWidth, h = innerHeight; VH = h < 520 ? 440 : 540; VW = Math.round(Math.max(VH * 4 / 3, Math.min(1240, VH * w / h)));
     scale = Math.min(w / VW, h / VH); dpr = Math.min(2, window.devicePixelRatio || 1);
+    // safe-area insets (notch / rounded corners) in logical px, read from a probe padded with env(safe-area-inset-*), plus a corner margin
+    var cs = getComputedStyle(safeProbe), si = function (n) { return (parseFloat(cs[n]) || 0) / scale; };
+    SL = si('paddingLeft') + 8; SR = si('paddingRight') + 8; ST = si('paddingTop'); SB = si('paddingBottom');
     cv.style.width = VW * scale + 'px'; cv.style.height = VH * scale + 'px'; cv.width = Math.round(VW * scale * dpr); cv.height = Math.round(VH * scale * dpr);
   }
   addEventListener('resize', resize); resize();
@@ -969,7 +981,7 @@ body.touch #touch-ui { display: block; }
     if (I.take('act') && n) n.fn();
     autosave -= dt; if (autosave < 0) { autosave = 8; save(); }
   }
-  var houseCool = 0, autosave = 8;
+  var houseCool = 0, autosave = 8, titleButtons = [];
   function advance() {
     var pg = dlg.pages[dlg.i]; if (pg.choices && dlg.t < .2) return;
     if (dlg.t < .15) return; dlg.i++; dlg.t = 0;
@@ -991,6 +1003,7 @@ body.touch #touch-ui { display: block; }
   /* ---------- draw ---------- */
   function draw() {
     buttons = [];
+    I.setRoam(screen === 'play' && !dlg && !overlay && !digAnim); // joystick + action button only in free roam
     c.setTransform(scale * dpr, 0, 0, scale * dpr, 0, 0); c.imageSmoothingEnabled = true;
     if (screen === 'title') drawTitle(); else if (screen === 'house') drawHouse(); else drawWorld();
     if (dlg) drawDialog();
@@ -1063,14 +1076,14 @@ body.touch #touch-ui { display: block; }
     var anim = digAnim ? 'dig' : cheer > 0 ? 'happy' : player.moving ? 'walk' : 'idle';
     A.rebecca(c, player.x, player.y, { dir: anim === 'happy' ? 'down' : player.dir, anim: anim, t: digAnim ? digAnim.t : anim === 'walk' ? player.t : time, scale: .74, holdAcorn: anim === 'happy' && state.bag.goldenAcorn && !state.hunts.acorn.placed });
   }
-  function drawHUD() {
+  function drawHUD() { // left panel is translated by the safe-area inset; clue paws are drawn inside it
     var h = L.hunt(state, 'acorn'), st = L.stage(state, 'acorn');
     var msg = ['Find the riddle stone', 'Follow the clues', 'Follow the clues', 'Follow the clues', 'Solve the final riddle', h.placed ? 'Treasure home!' : 'Bring it home!'][st];
-    panel(14, 14, 330, 92, 20);
+    c.save(); c.translate(SL, ST); panel(14, 14, 330, 92, 20);
     text('Golden Acorn', 30, 40, 28, '#a8425f');
     text(msg, 30, 78, 28, INK);
     for (var i = 0; i < TR.clues.length; i++) { var x = 234 + i * 34, y = 40, on = h.clues.length > i; c.fillStyle = on ? '#d9539a' : 'rgba(46,33,64,.18)'; A.ell(c, x, y + 4, 8, 7); c.fill(); [[-8, -5], [-3, -9], [3, -9], [8, -5]].forEach(function (p) { A.ell(c, x + p[0], y + p[1], 2.8, 3.2); c.fill(); }); }
-    var bx = VW - 46;
+    c.restore(); var bx = VW - 46 - SR;
     roundBtn(bx, 50, 32, function (x, y) { for (var j = 0; j < 3; j++) { c.fillStyle = INK; A.rr(c, x - 13, y - 11 + j * 9, 26, 5, 2.5); c.fill(); } }, function () { overlay = 'menu'; S.play('tap'); });
     roundBtn(bx - 76, 50, 32, function (x, y) { A.rr(c, x - 14, y - 13, 28, 26, 4); c.fillStyle = '#7fb6e0'; c.fill(); c.lineWidth = 3; c.strokeStyle = INK; c.stroke(); c.beginPath(); c.moveTo(x, y - 13); c.lineTo(x, y + 13); c.stroke(); }, function () { overlay = 'book'; S.play('page'); });
     if (state.mode !== 'master') roundBtn(bx - 152, 50, 32, function (x, y) { A.ell(c, x, y - 3, 10, 10); c.fillStyle = '#ffe27a'; c.fill(); c.lineWidth = 3; c.strokeStyle = INK; c.stroke(); c.fillStyle = INK; c.fillRect(x - 5, y + 8, 10, 6); }, function () { hint(); });
@@ -1110,12 +1123,12 @@ body.touch #touch-ui { display: block; }
   }
   function drawMenu() {
     c.fillStyle = 'rgba(46,33,64,.45)'; c.fillRect(0, 0, VW, VH);
-    var w = 520, h = 420, x = (VW - w) / 2, y = (VH - h) / 2; panel(x, y, w, h, 28);
+    var w = 520, h = 390, x = (VW - w) / 2, y = (VH - h) / 2; panel(x, y, w, h, 28);
     text('Paused', VW / 2, y + 46, 40, '#7a52b8', 'center');
-    button(x + 50, y + 90, w - 100, 60, 'Keep Exploring', function () { overlay = null; S.play('tap'); });
-    button(x + 50, y + 165, w - 100, 60, 'Explorer Help: ' + modeName(state.mode), cycleMode, '#cfe8b4');
-    button(x + 50, y + 240, w - 100, 60, state.muted ? 'Sound: Off' : 'Sound: On', toggleMute, '#bfdcf5');
-    button(x + 50, y + 315, w - 100, 60, 'Title Screen', function () { save(); overlay = null; screen = 'title'; }, '#f3e2bd');
+    button(x + 50, y + 84, w - 100, 60, 'Keep Exploring', function () { overlay = null; S.play('tap'); });
+    button(x + 50, y + 156, w - 100, 60, 'Explorer Help: ' + modeName(state.mode), cycleMode, '#cfe8b4');
+    button(x + 50, y + 228, w - 100, 60, state.muted ? 'Sound: Off' : 'Sound: On', toggleMute, '#bfdcf5');
+    button(x + 50, y + 300, w - 100, 60, 'Title Screen', function () { save(); overlay = null; screen = 'title'; }, '#f3e2bd');
   }
   function cycleMode() { var m = L.MODES; state.mode = m[(m.indexOf(state.mode) + 1) % m.length]; save(); S.play('tap'); showToast({ guided: 'Guided: paw markers show the way', independent: 'Independent: use the hint button', master: 'Master: no hints at all!' }[state.mode]); }
   function drawTitle() {
@@ -1125,12 +1138,15 @@ body.touch #touch-ui { display: block; }
     c.fillStyle = '#e6cc96'; c.beginPath(); c.moveTo(VW * .5 - 60, VH); c.quadraticCurveTo(VW * .5, VH * .7, VW * .5 + 30, VH * .56); c.lineTo(VW * .5 + 60, VH * .56); c.quadraticCurveTo(VW * .5 + 30, VH * .7, VW * .5 + 90, VH); c.fill();
     [[120, 470, 0], [320, 520, 2], [VW - 120, 500, 1], [VW - 330, 470, 2], [420, 420, 1]].forEach(function (f) { Wd.drawDecor(c, { k: 'flowers', x: f[0], y: f[1], c: f[2] }); });
     Wd.item(c, 'butterfly', 250 + Math.sin(time) * 40, 380 + Math.cos(time * 1.3) * 20, time, 1.6);
-    A.rebecca(c, VW * .5, 500, { dir: 'down', anim: Math.floor(time / 4) % 3 === 2 ? 'happy' : 'idle', t: time, scale: 2.0 });
-    text('Rebecca the Raccoon', VW / 2, 70, 66, '#ff9ccb', 'center', 12);
-    text('and the Golden Acorn', VW / 2, 128, 36, CREAM, 'center', 8);
-    button(70, VH - 170, 250, 76, hasSave && state.seenIntro ? 'Continue' : 'Play', startGame, '#ffb3d6', 40);
-    button(VW - 360, VH - 160, 300, 60, 'Help: ' + modeName(state.mode), cycleMode, '#cfe8b4', 28);
-    button(VW - 360, VH - 88, 300, 60, state.muted ? 'Sound: Off' : 'Sound: On', toggleMute, '#bfdcf5', 28);
+    var rs = VH / 540 * (VW / VH < 1.6 ? 1.45 : 2.0); A.rebecca(c, VW * .5, VH - 40, { dir: 'down', anim: Math.floor(time / 4) % 3 === 2 ? 'happy' : 'idle', t: time, scale: rs });
+    text('Rebecca the Raccoon', VW / 2, 62 + ST, Math.min(66, VW / 13), '#ff9ccb', 'center', 12);
+    text('and the Golden Acorn', VW / 2, 116 + ST, 34, CREAM, 'center', 8);
+    // two columns beside Rebecca (she spans about +/-70*rs around the center): never overlap at 4:3 .. 2.2:1
+    var gap = 80 * rs, colW = Math.min(300, VW / 2 - gap - SL - 24), lx = Math.max(SL + 24, VW / 2 - gap - colW - 40), rx = VW - lx - colW, by = VH - SB - 30;
+    button(lx, by - 150, colW, 84, hasSave && state.seenIntro ? 'Continue' : 'Play', startGame, '#ffb3d6', 42);
+    button(rx, by - 150, colW, 66, 'Help: ' + modeName(state.mode), cycleMode, '#cfe8b4', 30);
+    button(rx, by - 70, colW, 66, state.muted ? 'Sound: Off' : 'Sound: On', toggleMute, '#bfdcf5', 30);
+    titleButtons = buttons.slice();
   }
   function drawHouse() {
     var g = c.createLinearGradient(0, 0, 0, VH); g.addColorStop(0, '#f2cf98'); g.addColorStop(.62, '#e3b67c'); g.addColorStop(.63, '#c48a50'); g.addColorStop(1, '#a8703e'); c.fillStyle = g; c.fillRect(0, 0, VW, VH);
@@ -1155,8 +1171,8 @@ body.touch #touch-ui { display: block; }
       buttons.push({ x: px - 50, y: py - 70, w: 100, h: 100, fn: function () { houseSel = i; cycleSlot(i); } });
     });
     A.rebecca(c, VW * .45, VH * .86, { dir: 'down', anim: cheer > 0 ? 'happy' : 'idle', t: time, scale: .95 });
-    panel(14, 14, 430, 92, 20); text("Rebecca's Treehouse", 32, 42, 30, '#7a52b8'); text('Tap a spot to decorate', 32, 80, 28, INK);
-    button(VW - 200, 24, 180, 60, 'Go Outside', function () { screen = 'play'; save(); S.play('tap'); }, '#cfe8b4', 28);
+    c.save(); c.translate(SL, ST); panel(14, 14, 430, 92, 20); text("Rebecca's Treehouse", 32, 42, 30, '#7a52b8'); text('Tap a spot to decorate', 32, 80, 28, INK); c.restore();
+    button(VW - 200 - SR, 24 + ST, 180, 60, 'Go Outside', function () { screen = 'play'; save(); S.play('tap'); }, '#cfe8b4', 28);
   }
 
   /* ---------- pointer (UI buttons) ---------- */
@@ -1177,7 +1193,7 @@ body.touch #touch-ui { display: block; }
   // test hooks (used by tools/smoke.js)
   window.__rebecca = { state: function () { return state; }, player: player, start: startGame, teleport: function (x, y) { player.x = x; player.y = y; camInit = false; }, act: function () { var n = nearest(); if (n) n.fn(); return n && n.label; },
     nearest: function () { var n = nearest(); return n && { label: n.label, dig: !!n.dig }; }, advance: function () { while (dlg) { var pg = dlg.pages[dlg.i]; if (pg.choices) return pg.choices.map(function (x) { return x.label; }); dlg.t = 1; advance(); } }, choose: function (i) { choose(dlg.pages[dlg.i].choices[i]); },
-    screen: function (s) { if (s) screen = s; return screen; }, overlay: function (o) { overlay = o; }, dlg: function () { return dlg; }, cheer: function (v) { cheer = v; }, blocked: Wd.blocked, digVisible: function () { return L.canDig(state, 'acorn'); }, time: function () { return time; }, setDigT: function (t) { if (digAnim) digAnim.t = t; } };
+    titleButtons: function () { return titleButtons.map(function (b) { return { x: b.x / VW, y: b.y / VH, w: b.w / VW, h: b.h / VH }; }); }, screen: function (s) { if (s) screen = s; return screen; }, overlay: function (o) { overlay = o; }, dlg: function () { return dlg; }, cheer: function (v) { cheer = v; }, blocked: Wd.blocked, digVisible: function () { return L.canDig(state, 'acorn'); }, time: function () { return time; }, setDigT: function (t) { if (digAnim) digAnim.t = t; } };
 })();
 
 </script>
