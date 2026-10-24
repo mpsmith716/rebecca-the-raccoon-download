@@ -344,7 +344,7 @@ body.touch.roam #touch-ui { display: block; }
     fishtank: { name: 'Fish Tank', type: 'furniture', place: 'floor', w: 2, h: 1, value: 200 },
     painting: { name: 'Forest Painting', type: 'furniture', place: 'wall', w: 2, h: 1, value: 120 },
     clock: { name: 'Owl Clock', type: 'furniture', place: 'wall', w: 1, h: 1, value: 90 },
-    wallshelf: { name: 'Wall Shelf', type: 'furniture', place: 'wall', w: 2, h: 1, value: 60 },
+    wallshelf: { name: 'Long Shelf', type: 'furniture', place: 'wall', w: 2, h: 1, value: 45 },
     garland: { name: 'Leaf Garland', type: 'furniture', place: 'wall', w: 2, h: 1, value: 40 },
     starlights: { name: 'Star Lights', type: 'furniture', place: 'wall', w: 2, h: 1, value: 110, light: true, nightStock: true },
     roundrug: { name: 'Round Rug', type: 'furniture', place: 'rug', w: 2, h: 2, value: 100 },
@@ -376,8 +376,26 @@ body.touch.roam #touch-ui { display: block; }
     bookstack: { name: 'Book Tower', type: 'furniture', place: 'floor', w: 1, h: 1, value: 0, exclusive: 'hollow' },
     readingchair: { name: 'Reading Nook Chair', type: 'furniture', place: 'floor', w: 1, h: 1, value: 0, exclusive: 'hollow' },
     storyrug: { name: 'Open Book Rug', type: 'furniture', place: 'rug', w: 3, h: 2, value: 0, exclusive: 'hollow' },
+    // 0.5.2 shelves, surfaces and small things (cheap at Noodle's; shelves are always in stock)
+    smallshelf: { name: 'Small Shelf', type: 'furniture', place: 'wall', w: 1, h: 1, value: 25 },
+    cornershelf: { name: 'Corner Shelf', type: 'furniture', place: 'wall', w: 1, h: 1, value: 35 },
+    dresser: { name: 'Dresser', type: 'furniture', place: 'floor', w: 2, h: 1, value: 150 },
+    candle: { name: 'Honey Candle', type: 'furniture', place: 'floor', w: 1, h: 1, value: 20, light: true },
+    littlebooks: { name: 'Little Books', type: 'furniture', place: 'floor', w: 1, h: 1, value: 25 },
+    gardentable: { name: 'Garden Table', type: 'furniture', place: 'yard', w: 2, h: 1, value: 70 },
+    crate: { name: 'Wooden Crate', type: 'furniture', place: 'yard', w: 1, h: 1, value: 30 },
+    flowerpot: { name: 'Flower Pot', type: 'furniture', place: 'yard', w: 1, h: 1, value: 20 },
+    wreath: { name: 'Leaf Wreath', type: 'furniture', place: 'yardwall', w: 1, h: 1, value: 40 },
     snowgarland: { name: 'Snowflake Garland', type: 'furniture', place: 'wall', w: 2, h: 1, value: 0, premium: 'pack.winter' }
   };
+  /* ---- 0.5.2 placement types: floor (grounded furniture), rug (under things), wall (wall band), small (floor, a surface or a shelf), hang (on a fence) ---- */
+  var SMALL = ['plant', 'lamp', 'snakeplush', 'moonlamp', 'booklamp', 'candle', 'littlebooks', 'goldenAcorn', 'moonPearl', 'storyKey', 'goldenQuill', 'pumpkin', 'glowshroom', 'jackolantern', 'flowerpot'];
+  // surfaces: n = item slots (never more than the footprint width), h = top height in cells above the floor line, mount = takes hanging items
+  var SURF = { table: { n: 1, h: .84 }, toychest: { n: 1, h: .86 }, bookshelf: { n: 2, h: 1.84 }, storyshelf: { n: 2, h: 1.4 }, dresser: { n: 2, h: 1.1 }, fireplace: { n: 2, h: 1.34 },
+    smallshelf: { n: 1, h: .32 }, wallshelf: { n: 2, h: .32 }, cornershelf: { n: 1, h: .32 }, gardentable: { n: 2, h: .86 }, crate: { n: 1, h: .66 }, fence: { n: 1, h: .45, mount: true } };
+  Object.keys(ITEMS).forEach(function (k) { var d = ITEMS[k]; if (!d.place) return;
+    d.pt = d.place === 'rug' || d.place === 'yardrug' ? 'rug' : d.place === 'wall' ? 'wall' : d.place === 'yardwall' ? 'hang' : SMALL.indexOf(k) >= 0 ? 'small' : 'floor'; if (SURF[k]) d.surf = SURF[k]; });
+  var SHELVES = ['smallshelf', 'wallshelf', 'cornershelf'];
   function value(item) { return ITEMS[item] ? ITEMS[item].value : 0; }
   function sellable(item) { var t = ITEMS[item] && ITEMS[item].type; return !!t && t !== 'treasure' && t !== 'tool' && !ITEMS[item].premium && !ITEMS[item].exclusive; }
   /* ---- outfits (cosmetic only) ---- */
@@ -393,8 +411,8 @@ body.touch.roam #touch-ui { display: block; }
 
   /* ================= State ================= */
   // a new treehouse starts cozy, not bare (existing saves are left as they are)
-  var STARTER = [['floor', 'roundrug', 5, 2], ['floor', 'table', 8, 1], ['floor', 'chair', 9, 1], ['floor', 'plant', 11, 0], ['floor', 'lamp', 1, 0], ['wall', 'painting', 3, 0], ['floor', 'sofa', 0, 3], ['floor', 'toychest', 11, 3]];
-  function newState() { var s = bareState(); STARTER.forEach(function (q) { s.bag[q[1]] = (s.bag[q[1]] || 0) + 1; if (canPlace(s, q[0], q[1], q[2], q[3], 0)) place(s, q[0], q[1], q[2], q[3], 0); }); return s; }
+  var STARTER = [['floor', 'roundrug', 5, 2], ['floor', 'table', 8, 1], ['floor', 'chair', 9, 1], ['floor', 'plant', 11, 0], ['floor', 'lamp', 1, 0], ['wall', 'painting', 3, 0], ['floor', 'sofa', 0, 3], ['floor', 'toychest', 11, 3], ['wall', 'smallshelf', 0, 1], ['wall', 'littlebooks', 0, 1], ['floor', 'candle', 8, 1]];
+  function newState() { var s = bareState(); STARTER.forEach(function (q) { s.bag[q[1]] = (s.bag[q[1]] || 0) + 1; placeAt(s, q[0], q[1], q[2], q[3], 0); }); return s; }
   function bareState() {
     return { v: 2, mode: 'guided', pos: { x: 520, y: 800 }, dir: 'down', coins: 50,
       hunts: { acorn: blankHunt(), pearl: blankHunt(), bookmap: blankHunt(), quill: blankHunt() },
@@ -514,12 +532,13 @@ body.touch.roam #touch-ui { display: block; }
   /* ================= Shop (Noodle the snake) ================= */
   // Deterministic per date: everyone sees the same stock, nothing random is ever paid for.
   var DEAL_MULTS = [0.6, 0.8, 1, 1, 1.25, 1.5];
-  var FURN = Object.keys(ITEMS).filter(function (k) { return ITEMS[k].type === 'furniture' && !ITEMS[k].nightStock && !ITEMS[k].premium && !ITEMS[k].exclusive; });
+  var FURN = Object.keys(ITEMS).filter(function (k) { return ITEMS[k].type === 'furniture' && SHELVES.indexOf(k) < 0 && !ITEMS[k].nightStock && !ITEMS[k].premium && !ITEMS[k].exclusive; });
   var NIGHT_FURN = Object.keys(ITEMS).filter(function (k) { return ITEMS[k].nightStock && !ITEMS[k].premium; });
   function dealLabel(price, usual) { var r = price / usual; return r <= 0.85 ? 'bargain' : r < 1.15 ? 'fair' : 'pricey'; }
   function shopStock(key, night) {
     var r = rng(dayNumber(key) * 2654435761 + 7), items = shuffle(FURN, r).slice(0, 6), mults = shuffle(DEAL_MULTS, r);
     var stock = items.map(function (it, i) { var u = value(it), p = Math.max(1, Math.round(u * mults[i])); return { id: 'buy:' + it, item: it, price: p, usual: u, deal: dealLabel(p, u) }; });
+    SHELVES.forEach(function (it) { stock.push({ id: 'buy:' + it, item: it, price: value(it), usual: value(it), deal: 'fair', always: true }); });
     if (night) NIGHT_FURN.forEach(function (it) { stock.push({ id: 'buy:' + it, item: it, price: value(it), usual: value(it), deal: 'fair', moon: true }); });
     return stock;
   }
@@ -574,26 +593,82 @@ body.touch.roam #touch-ui { display: block; }
   function fulfill(state, idx) { var q = state.day.requests[idx]; if (!q || q.done || !removeItem(state, q.item, 1)) return false; q.done = true; addCoins(state, q.coins); if (q.gift) addItem(state, q.gift, 1); state.hearts[q.npc] = (state.hearts[q.npc] || 0) + 1; event(state, 'gift'); return true; }
 
   /* ================= Placement (treehouse rooms + yard) ================= */
-  var GRIDS = { wall: { cols: 8, rows: 2, allow: ['wall', 'trophy'] }, loft: { cols: 4, rows: 2, allow: ['floor', 'rug', 'trophy'] }, floor: { cols: 12, rows: 5, allow: ['floor', 'rug', 'trophy'] }, yard: { cols: 10, rows: 6, allow: ['yard', 'yardrug'] }, libwall: { cols: 10, rows: 2, allow: ['wall', 'trophy'], loft: true }, lib: { cols: 10, rows: 4, allow: ['floor', 'rug', 'trophy'], loft: true } };
+  var GRIDS = { wall: { cols: 8, rows: 2, allow: ['wall'], wallish: true }, loft: { cols: 4, rows: 1, allow: ['floor', 'rug', 'trophy'] }, floor: { cols: 12, rows: 5, allow: ['floor', 'rug', 'trophy'] }, yard: { cols: 10, rows: 6, allow: ['yard', 'yardrug'] }, libwall: { cols: 10, rows: 2, allow: ['wall'], loft: true, wallish: true }, lib: { cols: 10, rows: 4, allow: ['floor', 'rug', 'trophy'], loft: true } };
   function layerOf(place) { return place === 'rug' || place === 'yardrug' ? 'under' : 'top'; }
+  function ptype(item) { return ITEMS[item] && ITEMS[item].pt; }
   function footprint(item, r) { var d = ITEMS[item]; return r % 2 ? { w: d.h, h: d.w } : { w: d.w, h: d.h }; }
-  function canPlace(state, grid, item, x, y, r, ignoreId) {
-    var g = GRIDS[grid], d = ITEMS[item]; if (!g || !d || !d.place || g.allow.indexOf(d.place) < 0) return false; if (g.loft && !state.loft) return false;
-    var f = footprint(item, r || 0); if (x < 0 || y < 0 || x + f.w > g.cols || y + f.h > g.rows) return false;
+  function areaOf(item) { var pl = ITEMS[item].place; return pl === 'yard' || pl === 'yardrug' || pl === 'yardwall' ? 'yard' : 'room'; }
+  function slotsOf(p) { var sf = ITEMS[p.item].surf; return sf ? Math.min(sf.n, footprint(p.item, p.r).w) : 0; }
+  function childrenOf(state, id) { return state.placed.filter(function (q) { return q.on === id; }); }
+  // direct placement on a grid cell (floor, rug, wall, or a small item standing on the floor). Things on surfaces don't block cells.
+  function canPlace(state, grid, item, x, y, r, ignoreId) { return !whyNot(state, grid, item, x, y, r, ignoreId); }
+  function whyNot(state, grid, item, x, y, r, ignoreId) {
+    var g = GRIDS[grid], d = ITEMS[item]; if (!g || !d || !d.place) return 'nope'; if (g.loft && !state.loft) return 'nope';
+    if (g.allow.indexOf(d.place) < 0) return d.pt === 'wall' ? 'wall' : d.pt === 'hang' ? 'hang' : d.pt === 'small' && g.wallish ? 'shelf' : 'floor';
+    var f = footprint(item, r || 0); if (x < 0 || y < 0 || x + f.w > g.cols || y + f.h > g.rows) return 'room';
+    if (item === 'cornershelf' && x !== 0 && x !== g.cols - 1) return 'corner';
     var layer = layerOf(d.place);
-    return !state.placed.some(function (p) { if (p.grid !== grid || p.id === ignoreId || layerOf(ITEMS[p.item].place) !== layer) return false; var pf = footprint(p.item, p.r); return x < p.x + pf.w && p.x < x + f.w && y < p.y + pf.h && p.y < y + f.h; });
+    return state.placed.some(function (p) { if (p.grid !== grid || p.id === ignoreId || p.on || layerOf(ITEMS[p.item].place) !== layer) return false; var pf = footprint(p.item, p.r); return x < p.x + pf.w && p.x < x + f.w && y < p.y + pf.h && p.y < y + f.h; }) ? 'room' : null;
   }
-  function place(state, grid, item, x, y, r) { // consumes one from the bag
+  function canPlaceOn(state, item, hostId, slot, ignoreId) {
+    var h = findPlaced(state, hostId), d = ITEMS[item]; if (!h || h.on || h.id === ignoreId || !d) return false; var sf = ITEMS[h.item].surf; if (!sf) return false;
+    if (d.pt !== (sf.mount ? 'hang' : 'small') || areaOf(item) !== areaOf(h.item)) return false; if (GRIDS[h.grid].loft && !state.loft) return false;
+    if (slot !== (slot | 0) || slot < 0 || slot >= slotsOf(h)) return false;
+    return !state.placed.some(function (q) { return q.on === hostId && q.slot === slot && q.id !== ignoreId; });
+  }
+  function hostAt(state, grid, cx, cy, ignoreId) { var hit = null; state.placed.forEach(function (p) { if (p.grid !== grid || p.on || p.id === ignoreId || !ITEMS[p.item].surf) return; var f = footprint(p.item, p.r); if (cx >= p.x && cx < p.x + f.w && cy >= p.y && cy < p.y + f.h) hit = p; }); return hit; }
+  // where would `item` go if dropped on cell (cx, cy)? Small things land on a surface under the finger first, else on the floor. Nothing floats.
+  function spotAt(state, grid, item, cx, cy, r, ignoreId) {
+    var g = GRIDS[grid], d = ITEMS[item]; if (!g || !d) return { ok: false, why: 'nope' }; r = r || 0;
+    if (d.pt === 'small' || d.pt === 'hang') { var h = hostAt(state, grid, cx, cy, ignoreId);
+      if (h) { var n = slotsOf(h), want = Math.max(0, Math.min(n - 1, cx - h.x)), order = [want]; for (var i = 0; i < n; i++) if (i !== want) order.push(i);
+        for (i = 0; i < order.length; i++) if (canPlaceOn(state, item, h.id, order[i], ignoreId)) return { ok: true, on: h.id, slot: order[i], grid: grid, x: h.x + order[i], y: h.y };
+        if (!!ITEMS[h.item].surf.mount === (d.pt === 'hang')) var full = true; } }
+    var f = footprint(item, r), x = Math.max(0, Math.min(g.cols - f.w, cx)), y = Math.max(0, Math.min(g.rows - f.h, cy)), why = whyNot(state, grid, item, x, y, r, ignoreId);
+    return why ? { ok: false, why: full ? 'full' : why } : { ok: true, grid: grid, x: x, y: y };
+  }
+  function commit(state, item, sp, r) { var p = { id: state.nextId++, grid: sp.grid, item: item, x: sp.x, y: sp.y, r: sp.on ? 0 : r || 0 }; if (sp.on) { p.on = sp.on; p.slot = sp.slot; } state.placed.push(p); return p; }
+  function afterPlace(state, item) { if (item === 'goldenAcorn') hunt(state, 'acorn').placed = true; if (item === 'moonPearl') hunt(state, 'pearl').placed = true; if (item === 'storyKey') hunt(state, 'bookmap').placed = true; if (item === 'goldenQuill') hunt(state, 'quill').placed = true; event(state, 'place'); }
+  function place(state, grid, item, x, y, r) { // direct placement at an exact anchor; consumes one from the bag
     r = r || 0; if (!(state.bag[item] > 0) || !canPlace(state, grid, item, x, y, r)) return null;
-    removeItem(state, item, 1); var p = { id: state.nextId++, grid: grid, item: item, x: x, y: y, r: r }; state.placed.push(p);
-    if (item === 'goldenAcorn') hunt(state, 'acorn').placed = true; if (item === 'moonPearl') hunt(state, 'pearl').placed = true;
-    event(state, 'place'); return p;
+    removeItem(state, item, 1); var p = commit(state, item, { grid: grid, x: x, y: y }, r); afterPlace(state, item); return p;
+  }
+  function placeAt(state, grid, item, cx, cy, r) { // the editor's drop: surface first for small things
+    if (!(state.bag[item] > 0)) return null; var sp = spotAt(state, grid, item, cx, cy, r); if (!sp.ok) return null;
+    removeItem(state, item, 1); var p = commit(state, item, sp, r); afterPlace(state, item); return p;
   }
   function findPlaced(state, id) { return state.placed.filter(function (p) { return p.id === id; })[0]; }
-  function move(state, id, grid, x, y) { var p = findPlaced(state, id); if (!p || !canPlace(state, grid, p.item, x, y, p.r, id)) return false; p.grid = grid; p.x = x; p.y = y; return true; }
-  function rotate(state, id) { var p = findPlaced(state, id); if (!p) return false; var nr = (p.r + 1) % 4; if (!canPlace(state, p.grid, p.item, p.x, p.y, nr, id)) { nr = (p.r + 2) % 4; if (!canPlace(state, p.grid, p.item, p.x, p.y, nr, id)) return false; } p.r = nr; return true; }
-  function store(state, id) { var p = findPlaced(state, id); if (!p) return false; state.placed.splice(state.placed.indexOf(p), 1); addItem(state, p.item, 1); return true; }
-
+  function follow(state, p) { childrenOf(state, p.id).forEach(function (q) { q.grid = p.grid; q.x = p.x + q.slot; q.y = p.y; }); }
+  function overflow(state, p, r) { var n = ITEMS[p.item].surf ? Math.min(ITEMS[p.item].surf.n, footprint(p.item, r).w) : 0; return childrenOf(state, p.id).some(function (q) { return q.slot >= n; }); }
+  // move (and optionally turn) a placed thing to cell (cx, cy). What sits on a surface travels with it.
+  function moveTo(state, id, grid, cx, cy, r) {
+    var p = findPlaced(state, id); if (!p) return { ok: false, why: 'nope' }; if (r === undefined) r = p.r;
+    if (overflow(state, p, r)) return { ok: false, why: 'loaded' };
+    var sp = spotAt(state, grid, p.item, cx, cy, r, id); if (!sp.ok) return sp;
+    if (sp.on && sp.on === p.id) return { ok: false, why: 'nope' };
+    p.grid = sp.grid; p.x = sp.x; p.y = sp.y; p.r = sp.on ? 0 : r; if (sp.on) { p.on = sp.on; p.slot = sp.slot; } else { delete p.on; delete p.slot; }
+    follow(state, p); return { ok: true };
+  }
+  function move(state, id, grid, x, y) { var p = findPlaced(state, id); if (!p) return false; if (p.on || ITEMS[p.item].pt === 'small') return moveTo(state, id, grid, x, y).ok; if (!canPlace(state, grid, p.item, x, y, p.r, id)) return false; p.grid = grid; p.x = x; p.y = y; follow(state, p); return true; }
+  function rotate(state, id) { var p = findPlaced(state, id); if (!p || p.on) return false; var nr = (p.r + 1) % 4; if (overflow(state, p, nr) || !canPlace(state, p.grid, p.item, p.x, p.y, nr, id)) { nr = (p.r + 2) % 4; if (overflow(state, p, nr) || !canPlace(state, p.grid, p.item, p.x, p.y, nr, id)) return false; } p.r = nr; return true; }
+  function store(state, id) { // storing a table or shelf puts what's on it back in the bag too
+    var p = findPlaced(state, id); if (!p) return false; childrenOf(state, id).forEach(function (q) { state.placed.splice(state.placed.indexOf(q), 1); addItem(state, q.item, 1); });
+    state.placed.splice(state.placed.indexOf(p), 1); addItem(state, p.item, 1); return true;
+  }
+  // old saves: furniture first, then small things onto their surface (or any free shelf/floor spot nearby); anything that would float goes back to the bag
+  function migratePlaced(s, list, itemOk) {
+    var idMap = {}, later = [], lost = function (it) { if (ITEMS[it].type !== 'treasure') s.bag[it] = Math.min(999, (s.bag[it] || 0) + 1); };
+    list.forEach(function (p) { if (!p || !itemOk(p.item) || !GRIDS[p.grid]) return; var d = ITEMS[p.item]; if (!d.place) return;
+      if (p.on || d.pt === 'small' || d.pt === 'hang') { later.push(p); return; }
+      var r = (p.r | 0) % 4, x = p.x | 0, y = p.grid === 'loft' ? 0 : p.y | 0;
+      if (canPlace(s, p.grid, p.item, x, y, r)) idMap[p.id] = commit(s, p.item, { grid: p.grid, x: x, y: y }, r).id; else lost(p.item); });
+    later.forEach(function (p) { var sp = null, x = p.x | 0, y = p.grid === 'loft' ? 0 : p.y | 0;
+      if (p.on && idMap[p.on] && canPlaceOn(s, p.item, idMap[p.on], p.slot | 0)) { var h = findPlaced(s, idMap[p.on]); sp = { ok: true, on: h.id, slot: p.slot | 0, grid: h.grid, x: h.x + (p.slot | 0), y: h.y }; }
+      if (!sp && !p.on) { sp = spotAt(s, p.grid, p.item, x, y, 0); if (!sp.ok && GRIDS[p.grid].wallish) { // a trophy hung in mid-air: nearest shelf with room
+        var hosts = s.placed.filter(function (h) { return h.grid === p.grid && !h.on && ITEMS[h.item].surf && !ITEMS[h.item].surf.mount; }).sort(function (a, b) { return Math.abs(a.x - x) - Math.abs(b.x - x); });
+        sp = null; hosts.some(function (h) { for (var i = 0; i < slotsOf(h); i++) if (canPlaceOn(s, p.item, h.id, i)) { sp = { ok: true, on: h.id, slot: i, grid: h.grid, x: h.x + i, y: h.y }; return true; } return false; }); } }
+      if (sp && sp.ok) commit(s, p.item, sp, 0); else lost(p.item); });
+  }
   /* ================= Daily riddle ================= */
   var DAILY = [
     { q: 'I have a trunk but never pack it. What am I?', a: ['A tree', 'A car', 'A suitcase'], ok: 0 },
@@ -737,10 +812,7 @@ body.touch.roam #touch-ui { display: block; }
     if (o.v === 1) { // 0.1.x: decor slots and the golden acorn in the bag
       if (s.hunts.acorn.dug) s.bag.goldenAcorn = 1; s.hunts.acorn.placed = false;
     }
-    if (Array.isArray(o.placed)) o.placed.slice(0, 300).forEach(function (p) {
-      if (!p || !itemOk(p.item) || !GRIDS[p.grid]) return; var r = (p.r | 0) % 4;
-      if (canPlace(s, p.grid, p.item, p.x | 0, p.y | 0, r)) { s.placed.push({ id: s.nextId++, grid: p.grid, item: p.item, x: p.x | 0, y: p.y | 0, r: r }); }
-    });
+    if (Array.isArray(o.placed)) migratePlaced(s, o.placed.slice(0, 300), itemOk);
     ['goldenAcorn', 'moonPearl', 'storyKey', 'goldenQuill'].forEach(function (t) { var onShow = s.placed.some(function (p) { return p.item === t; }); if (onShow) delete s.bag[t]; else if (dugItems[t]) s.bag[t] = 1; if (s.bag[t] > 1) s.bag[t] = 1; });
     s.hunts.acorn.placed = s.placed.some(function (p) { return p.item === 'goldenAcorn'; }); s.hunts.pearl.placed = s.placed.some(function (p) { return p.item === 'moonPearl'; }); s.hunts.bookmap.placed = s.placed.some(function (p) { return p.item === 'storyKey'; }); s.hunts.quill.placed = s.placed.some(function (p) { return p.item === 'goldenQuill'; });
     if (o.day && typeof o.day.key === 'string' && o.v === 2) {
@@ -778,7 +850,7 @@ body.touch.roam #touch-ui { display: block; }
     phase: phase, season: season, dateKey: dateKey, dayNumber: dayNumber, rng: rng, fishPool: fishPool, rollFish: rollFish,
     dealLabel: dealLabel, shopStock: shopStock, sellOffers: sellOffers, sellPrice: sellPrice, trades: trades, buy: buy, sell: sell, trade: trade,
     rollDay: rollDay, taskDef: taskDef, event: event, claimTask: claimTask, fulfill: fulfill,
-    footprint: footprint, canPlace: canPlace, place: place, move: move, rotate: rotate, store: store, findPlaced: findPlaced,
+    footprint: footprint, canPlace: canPlace, place: place, SURF: SURF, SMALL: SMALL, SHELVES: SHELVES, ptype: ptype, slotsOf: slotsOf, childrenOf: childrenOf, canPlaceOn: canPlaceOn, spotAt: spotAt, placeAt: placeAt, moveTo: moveTo, migratePlaced: migratePlaced, move: move, rotate: rotate, store: store, findPlaced: findPlaced,
     dailyRiddle: dailyRiddle, sanitize: sanitize, save: save, load: load };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else global.Logic = api;
 })(typeof window !== 'undefined' ? window : globalThis);
@@ -1709,6 +1781,18 @@ body.touch.roam #touch-ui { display: block; }
       var a = (t || 0) * .5; c.beginPath(); c.moveTo(0, y + u * .05); c.lineTo(Math.cos(a) * u * .14, y + u * .05 + Math.sin(a) * u * .14); c.moveTo(0, y + u * .05); c.lineTo(0, y - u * .08); c.lineWidth = l; c.strokeStyle = INK; c.stroke(); },
     wallshelf: function (c, W, u) { var l = lw(u), y = -u * .32; rr(c, -W / 2 + 4, y, W - 8, u * .12, 3); fs(c, PL, l);
       [[-W * .28, '#ff9ccb'], [0, '#9fd0f0'], [W * .26, '#ffd36e']].forEach(function (j) { rr(c, j[0] - u * .1, y - u * .3, u * .2, u * .3, 4); fs(c, j[1], l * .8); }); },
+    smallshelf: function (c, W, u) { var l = lw(u), y = -u * .32; rr(c, -W / 2 + 4, y, W - 8, u * .12, 3); fs(c, PL, l); [-1, 1].forEach(function (d) { c.beginPath(); c.moveTo(d * (W / 2 - 12), y + u * .12); c.lineTo(d * (W / 2 - 12), y + u * .3); c.lineTo(d * (W / 2 - 24), y + u * .12); c.closePath(); fs(c, PLD, l * .7); }); },
+    cornershelf: function (c, W, u) { var l = lw(u), y = -u * .32; c.beginPath(); c.moveTo(-W / 2 + 2, y); c.lineTo(W / 2 - 2, y); c.lineTo(W / 2 - 2, y + u * .1); c.quadraticCurveTo(0, y + u * .34, -W / 2 + 2, y + u * .1); c.closePath(); fs(c, PL, l); ell(c, 0, y + u * .12, u * .06, u * .05); c.fillStyle = '#ff9ccb'; c.fill(); },
+    dresser: function (c, W, u) { var l = lw(u), h = u * .98; rr(c, -W / 2 + 4, -h, W - 8, h, 7); fs(c, LG(c, -h, 0, '#e6b47a', PL), l);
+      for (var i = 0; i < 2; i++) for (var j = 0; j < 2; j++) { rr(c, -W / 2 + 10 + j * (W / 2 - 6), -h + 8 + i * h * .44, W / 2 - 16, h * .38, 5); fs(c, '#f0c58c', l * .7); ell(c, -W / 4 + j * W / 2 - 2, -h + 8 + i * h * .44 + h * .19, u * .04, u * .04); c.fillStyle = PLD; c.fill(); } },
+    candle: function (c, W, u, side, t) { var l = lw(u); rr(c, -u * .14, -u * .42, u * .28, u * .42, 5); fs(c, LG(c, -u * .42, 0, '#ffe6a0', '#f0b84a'), l); ell(c, 0, -u * .02, u * .24, u * .06); fs(c, '#d9a46a', l * .8);
+      var f = Math.sin((t || 0) * 9) * u * .015; ell(c, f, -u * .55, u * .07, u * .12); fs(c, G(c, 0, -u * .52, u * .12, '#fff6c0', '#ffb35a'), l * .6); },
+    littlebooks: function (c, W, u) { var l = lw(u); [['#ff86bd', -.26, .5], ['#7fb6e0', -.08, .58], ['#9fd66f', .1, .46]].forEach(function (b) { rr(c, u * b[1], -u * b[2], u * .16, u * b[2], 3); fs(c, b[0], l * .8); }); c.save(); c.translate(u * .32, 0); c.rotate(-.35); rr(c, -u * .08, -u * .44, u * .16, u * .44, 3); fs(c, '#ffd36e', l * .8); c.restore(); },
+    gardentable: function (c, W, u, side) { var l = lw(u); rr(c, -W / 2 + 6, -u * .74, W - 12, u * .14, 5); fs(c, LG(c, -u * .74, -u * .6, '#e6b47a', PL), l); [-1, 1].forEach(function (d) { rr(c, d * (W / 2 - 18) - u * .05, -u * .6, u * .1, u * .6, 3); fs(c, PLD, l * .8); }); },
+    crate: function (c, W, u) { var l = lw(u), h = u * .54; rr(c, -u * .4, -h, u * .8, h, 4); fs(c, LG(c, -h, 0, '#e6b47a', '#b07a44'), l); c.strokeStyle = PLD; c.lineWidth = l * .8; c.beginPath(); c.moveTo(-u * .4, -h * .5); c.lineTo(u * .4, -h * .5); c.moveTo(-u * .36, -h + 3); c.lineTo(u * .36, -3); c.stroke(); },
+    flowerpot: function (c, W, u) { var l = lw(u); c.beginPath(); c.moveTo(-u * .22, -u * .34); c.lineTo(u * .22, -u * .34); c.lineTo(u * .16, 0); c.lineTo(-u * .16, 0); c.closePath(); fs(c, LG(c, -u * .34, 0, '#f0a070', '#c86a3a'), l);
+      [[-.12, '#ff86bd'], [.02, '#ffd36e'], [.14, '#b38ae6']].forEach(function (f) { c.beginPath(); c.moveTo(u * f[0], -u * .34); c.lineTo(u * f[0], -u * .56); c.strokeStyle = '#4c9a48'; c.lineWidth = l; c.stroke(); flower(c, u * f[0], -u * .6, u * .06, f[1], l * .5); }); },
+    wreath: function (c, W, u) { var l = lw(u), y = -u * .5; for (var i = 0; i < 10; i++) { var a = i / 10 * 6.28; ell(c, Math.cos(a) * u * .2, y + Math.sin(a) * u * .2, u * .09, u * .06, a + 1.2); fs(c, ['#7cc867', '#ffb35a', '#e86a5a'][i % 3], l * .6); } ell(c, 0, y + u * .24, u * .07, u * .05); fs(c, '#ff9ccb', l * .6); },
     garland: function (c, W, u, side, t) { var l = lw(u), y = -u * .7; c.beginPath(); c.moveTo(-W / 2 + 4, y); c.quadraticCurveTo(0, y + u * .4, W / 2 - 4, y); c.lineWidth = l; c.strokeStyle = PLD; c.stroke();
       for (var i = 0; i <= 6; i++) { var k = i / 6, x = -W / 2 + 4 + k * (W - 8), yy = y + Math.sin(k * Math.PI) * u * .2; ell(c, x, yy + u * .08, u * .07, u * .11, .4 * (i % 2 ? 1 : -1)); fs(c, ['#7cc867', '#ffb35a', '#e86a5a'][i % 3], l * .7); } },
     starlights: function (c, W, u, side, t) { var l = lw(u), y = -u * .75; c.beginPath(); c.moveTo(-W / 2 + 4, y); c.quadraticCurveTo(0, y + u * .35, W / 2 - 4, y); c.lineWidth = l * .8; c.strokeStyle = INK; c.stroke();
@@ -1806,14 +1890,18 @@ body.touch.roam #touch-ui { display: block; }
     var d = L.ITEMS[item]; if (!d) return; r = r || 0; var f = L.footprint(item, r), w = f.w * cs, h = f.h * cs;
     if (d.place === 'rug' || d.place === 'yardrug') return rug(c, item, x, y, w, h, cs);
     var fn = K[item]; if (!fn) return;
-    c.save(); c.translate(x + w / 2, y + h - (d.place === 'wall' ? 0 : cs * .12)); if (r >= 2) c.scale(-1, 1);
-    if (d.place !== 'wall') { c.fillStyle = 'rgba(40,30,60,.16)'; ell(c, 0, 0, w * .45, cs * .12); c.fill(); }
+    var hung = d.place === 'wall' || d.place === 'yardwall'; c.save(); c.translate(x + w / 2, y + h - (hung ? 0 : cs * .12)); if (r >= 2) c.scale(-1, 1);
+    if (!hung) { c.fillStyle = 'rgba(40,30,60,.16)'; ell(c, 0, 0, w * .45, cs * .12); c.fill(); }
     fn(c, w, cs, r % 2 === 1 && f.w !== f.h || (r % 2 === 1 && item === 'fence'), t || 0);
     c.restore();
   }
+  // a small thing sitting on a surface (or a wreath hung on a fence): its base rests exactly on the host's top
+  function onTop(host, slot, hx, hy, cs) { var hd = L.ITEMS[host.item], f = L.footprint(host.item, host.r), sf = hd.surf, k = .72, s = cs * k;
+    var base = hy + f.h * cs - (hd.place === 'wall' ? 0 : cs * .12) - sf.h * cs; return { x: hx + (slot + .5) * cs - s / 2, y: base - s + s * .12, cs: s }; }
+  function drawOn(c, item, host, slot, hx, hy, cs, t) { var q = onTop(host, slot, hx, hy, cs); draw(c, item, q.x, q.y, q.cs, 0, t); }
   function icon(c, item, cx, cy, size, t) { var d = L.ITEMS[item]; if (!d) return; var f = L.footprint(item, 0), cs = size / Math.max(f.w, f.h, item === 'lamppost' ? 2 : 1.15);
     var w = f.w * cs, h = f.h * cs; draw(c, item, cx - w / 2, d.place === 'rug' || d.place === 'yardrug' ? cy - h / 2 : cy + size * .45 - h, cs, 0, t); }
-  global.Decor = { draw: draw, icon: icon };
+  global.Decor = { draw: draw, icon: icon, drawOn: drawOn, onTop: onTop };
 })(window);
 
 </script>
@@ -2179,7 +2267,7 @@ body.touch.roam #touch-ui { display: block; }
 
   /* ---------- treehouse + decorating ---------- */
   function enterHouse() { houseRoom = 'main'; screen = 'house'; ed = null; S.play('page'); }
-  function placeable(area) { var allow = area === 'yard' ? ['yard', 'yardrug'] : ['floor', 'wall', 'rug', 'trophy']; return Object.keys(state.bag).filter(function (k) { var d = L.ITEMS[k]; return k !== 'storyKey' && d && d.place && allow.indexOf(d.place) >= 0 && state.bag[k] > 0; }); }
+  function placeable(area) { var allow = area === 'yard' ? ['yard', 'yardrug', 'yardwall'] : ['floor', 'wall', 'rug', 'trophy']; return Object.keys(state.bag).filter(function (k) { var d = L.ITEMS[k]; return k !== 'storyKey' && d && d.place && allow.indexOf(d.place) >= 0 && state.bag[k] > 0; }); }
 
   /* ---------- update ---------- */
   function update(dt) {
@@ -2307,7 +2395,7 @@ body.touch.roam #touch-ui { display: block; }
     items.push({ y: Wd.BOARD.y, f: function () { Wd.taskBoard(c, Wd.BOARD.x, Wd.BOARD.y); if (state.day.tasks.some(function (t) { return !t.claimed && t.p >= L.taskDef(t.id).n; })) drawBubble(Wd.BOARD.x, Wd.BOARD.y - 128, '!'); } });
     dirtPatches().forEach(function (pt) { if (vis(pt.x, pt.y)) items.push({ y: pt.y - 5, f: function () { drawDirt(pt); } }); });
     spawns.forEach(function (s) { if (vis(s.x, s.y) && L.areaUnlocked(state, s.area)) items.push({ y: s.y, f: function () { Wd.item(c, spawnItem(s), s.x, s.y, time); } }); });
-    state.placed.forEach(function (p) { if (p.grid !== 'yard' || L.ITEMS[p.item].place === 'yardrug') return; var f = L.footprint(p.item, p.r); items.push({ y: Wd.YARD.y + (p.y + f.h) * 40 - 6, f: function () { D.draw(c, p.item, Wd.YARD.x + p.x * 40, Wd.YARD.y + p.y * 40, 40, p.r, time); } }); });
+    state.placed.forEach(function (p) { if (p.grid !== 'yard' || p.on || L.ITEMS[p.item].place === 'yardrug') return; var f = L.footprint(p.item, p.r); items.push({ y: Wd.YARD.y + (p.y + f.h) * 40 - 6, f: function () { D.draw(c, p.item, Wd.YARD.x + p.x * 40, Wd.YARD.y + p.y * 40, 40, p.r, time); drawKids(p, Wd.YARD.x + p.x * 40, Wd.YARD.y + p.y * 40, 40); } }); });
     Wd.BRIDGES.forEach(function (b) { items.push({ y: b.y - b.h / 2, f: function () { Wd.drawRailings(c, true, b); } }); items.push({ y: b.y + b.h / 2 + 2, f: function () { Wd.drawRailings(c, false, b); } }); });
     if (!editing) items.push({ y: player.y, f: drawPlayer });
     items.sort(function (a, b) { return a.y - b.y; }).forEach(function (it) { it.f(); });
@@ -2566,7 +2654,7 @@ body.touch.roam #touch-ui { display: block; }
   function roomGeom() {
     var trayW = ed ? TRAY_W : 0, aw = VW - SL - SR - 36 - trayW, cs = Math.floor(Math.min(aw / 12, (VH - 96 - ST - SB) / 7.4)), x0 = SL + 18 + (aw - 12 * cs) / 2, y0 = 90 + ST;
     if (houseRoom === 'library') return { cs: cs, x0: x0, y0: y0, libwall: { x: x0 + cs, y: y0, cs: cs, cols: 10, rows: 2 }, lib: { x: x0 + cs, y: y0 + 2.35 * cs, cs: cs, cols: 10, rows: 4 } };
-    return { cs: cs, x0: x0, y0: y0, wall: { x: x0 + 4 * cs, y: y0, cs: cs, cols: 8, rows: 2 }, loft: { x: x0, y: y0 + .1 * cs, cs: cs, cols: 4, rows: 2 }, floor: { x: x0, y: y0 + 2.35 * cs, cs: cs, cols: 12, rows: 5 } };
+    return { cs: cs, x0: x0, y0: y0, wall: { x: x0 + 4 * cs, y: y0, cs: cs, cols: 8, rows: 2 }, loft: { x: x0, y: y0 + 1.1 * cs, cs: cs, cols: 4, rows: 1 }, floor: { x: x0, y: y0 + 2.35 * cs, cs: cs, cols: 12, rows: 5 } };
   }
   function yardGeom() { return { yard: { x: Wd.YARD.x - Math.round(cam.x), y: Wd.YARD.y - Math.round(cam.y), cs: 40, cols: Wd.YARD.cols, rows: Wd.YARD.rows } }; }
   function drawHouse() {
@@ -2590,9 +2678,9 @@ body.touch.roam #touch-ui { display: block; }
     text('Loft', x0 + 10, y0 + 2.1 * cs - cs * .62, 26, 'rgba(94,59,32,.7)');
     }
     // placed items: rugs, wall, loft (by row), floor (by row)
-    function drawGrid(name) { var gg = G[name], list = state.placed.filter(function (p) { return p.grid === name; }), dragging = ed && ed.held && ed.held.fromId;
+    function drawGrid(name) { var gg = G[name], list = state.placed.filter(function (p) { return p.grid === name && !p.on; }), dragging = ed && ed.held && ed.held.fromId;
       list.sort(function (a, b) { var la = L.ITEMS[a.item].place === 'rug' ? 0 : 1, lb = L.ITEMS[b.item].place === 'rug' ? 0 : 1; return la - lb || (a.y + L.footprint(a.item, a.r).h) - (b.y + L.footprint(b.item, b.r).h); });
-      list.forEach(function (p) { if (dragging === p.id) c.globalAlpha = .35; D.draw(c, p.item, gg.x + p.x * gg.cs, gg.y + p.y * gg.cs, gg.cs, p.r, time); c.globalAlpha = 1;
+      list.forEach(function (p) { if (dragging === p.id) c.globalAlpha = .35; D.draw(c, p.item, gg.x + p.x * gg.cs, gg.y + p.y * gg.cs, gg.cs, p.r, time); c.globalAlpha = 1; drawKids(p, gg.x + p.x * gg.cs, gg.y + p.y * gg.cs, gg.cs);
         if (ph === 'night' && L.ITEMS[p.item].light) { c.save(); c.globalCompositeOperation = 'lighter'; var lg = c.createRadialGradient(gg.x + (p.x + .5) * gg.cs, gg.y + p.y * gg.cs, 0, gg.x + (p.x + .5) * gg.cs, gg.y + p.y * gg.cs, gg.cs * 1.6); lg.addColorStop(0, 'rgba(255,210,120,.3)'); lg.addColorStop(1, 'rgba(255,210,120,0)'); c.fillStyle = lg; c.fillRect(gg.x + (p.x - 2) * gg.cs, gg.y + (p.y - 2) * gg.cs, gg.cs * 5, gg.cs * 5); c.restore(); } }); }
     (lib ? ['libwall', 'lib'] : ['wall', 'loft', 'floor']).forEach(drawGrid);
     if (!ed) A.rebecca(c, x0 + 7.5 * cs, fy + (lib ? 3.6 : 4.6) * cs, { dir: 'down', anim: cheer > 0 ? 'happy' : 'idle', t: time, scale: cs / 60, outfit: L.outfitOf(state) });
@@ -2608,6 +2696,8 @@ body.touch.roam #touch-ui { display: block; }
     if (state.loft) button(VW - SR - 290, VH - SB - 148, 276, 60, 'Library Loft', function () { houseRoom = 'library'; S.play('page'); }, '#e8dcf5', 28);
     if (L.customActive(state).length) { button(SL + 244, VH - SB - 78, 200, 60, unreadLetter() ? 'New letter!' : 'Letters', function () { overlay = 'letter'; S.play('page'); }, unreadLetter() ? '#ffb3d6' : '#f3e2bd', 28); if (unreadLetter()) drawBubble(SL + 436, VH - SB - 80, '!'); }
   }
+  function drawKids(p, hx, hy, cs) { var dragging = ed && ed.held && ed.held.fromId; L.childrenOf(state, p.id).forEach(function (q) { if (dragging === q.id || dragging === p.id) c.globalAlpha = .35; D.drawOn(c, q.item, p, q.slot, hx, hy, cs, time); c.globalAlpha = 1; }); }
+  var WHY = { wall: 'That goes on the wall', floor: 'That goes on the floor', shelf: 'Put it on a shelf', hang: 'Hang it on a fence', corner: 'Corner shelves go at the end of a wall', full: 'That spot is taken', room: 'No room there', loaded: 'Take things off the top first', nope: 'That doesn\'t go there' };
   // tapping a placed book item (Storybook Bookshelf, bookshelf, book tower) opens the book hunt screen
   var BOOKISH = ['storyshelf', 'bookshelf', 'bookstack'];
   function tapRoom(px, py) { var G = roomGeom(), cell = cellAt(G, px, py) || cellAt(G, px, py + G.cs * .6); if (!cell) return false; var hit = placedAt(cell); if (hit && BOOKISH.indexOf(hit.item) >= 0) { openBooks(); return true; } return false; }
@@ -2615,34 +2705,38 @@ body.touch.roam #touch-ui { display: block; }
   function exitEdit() { save(); if (screen === 'yardedit') { screen = 'play'; camInit = false; } ed = null; S.play('tap'); }
   function gridsFor() { return ed.area === 'room' ? roomGeom() : yardGeom(); }
   function cellAt(G, x, y) { for (var n in G) { var g = G[n]; if (!g || g.cols === undefined) continue; var cx = Math.floor((x - g.x) / g.cs), cy = Math.floor((y - g.y) / g.cs); if (cx >= 0 && cy >= 0 && cx < g.cols && cy < g.rows) return { grid: n, x: cx, y: cy }; } return null; }
-  function placedAt(cell) { var hit = null; state.placed.forEach(function (p) { if (p.grid !== cell.grid) return; var f = L.footprint(p.item, p.r); if (cell.x >= p.x && cell.x < p.x + f.w && cell.y >= p.y && cell.y < p.y + f.h) { if (!hit || L.ITEMS[hit.item].place === 'rug' || L.ITEMS[hit.item].place === 'yardrug') hit = p; } }); return hit; }
+  function placedAt(cell) { var hit = null, kid = null; state.placed.forEach(function (p) { if (p.grid !== cell.grid) return; if (p.on) { if (p.x === cell.x && cell.y >= p.y && cell.y < p.y + L.footprint(L.findPlaced(state, p.on).item, L.findPlaced(state, p.on).r).h) kid = p; return; } var f = L.footprint(p.item, p.r); if (cell.x >= p.x && cell.x < p.x + f.w && cell.y >= p.y && cell.y < p.y + f.h) { if (!hit || L.ITEMS[hit.item].place === 'rug' || L.ITEMS[hit.item].place === 'yardrug') hit = p; } }); return kid && !(ed && ed.sel === kid.id && hit) ? kid : hit; } // tap the top thing; tap again for what it sits on
   function editTap(x, y) {
     var G = gridsFor(), cell = cellAt(G, x, y); if (!cell) { ed.sel = null; return; }
     if (ed.held) {
-      var it = ed.held.item, f = L.footprint(it, ed.held.r), g = L.GRIDS[cell.grid], ax = Math.max(0, Math.min(g.cols - f.w, cell.x)), ay = Math.max(0, Math.min(g.rows - f.h, cell.y)), ok;
-      if (ed.held.fromId) { var p = L.findPlaced(state, ed.held.fromId), oldR = p.r; p.r = ed.held.r; ok = L.move(state, p.id, cell.grid, ax, ay); if (!ok) p.r = oldR; }
-      else ok = !!L.place(state, cell.grid, it, ax, ay, ed.held.r);
-      if (ok) { S.play('place'); burst(0, 0, '#fff'); ed.held = null; save(); } else { S.play('soft'); showToast(L.GRIDS[cell.grid].allow.indexOf(L.ITEMS[it].place) < 0 ? (L.ITEMS[it].place === 'wall' ? 'That goes on the wall' : 'That doesn\'t go there') : 'No room there'); }
+      var it = ed.held.item, res;
+      if (ed.held.fromId) res = L.moveTo(state, ed.held.fromId, cell.grid, cell.x, cell.y, ed.held.r);
+      else { var sp = L.spotAt(state, cell.grid, it, cell.x, cell.y, ed.held.r); res = sp.ok ? (L.placeAt(state, cell.grid, it, cell.x, cell.y, ed.held.r) ? sp : { ok: false, why: 'nope' }) : sp; }
+      if (res.ok) { S.play('place'); burst(0, 0, '#fff'); ed.held = null; save(); } else { S.play('soft'); showToast(WHY[res.why] || WHY.nope); }
       return;
     }
     var hit = placedAt(cell); ed.sel = hit ? hit.id : null; if (hit) S.play('tap');
   }
   function drawGridOverlay(name, g) {
-    var allow = L.GRIDS[name].allow, held = ed.held, ok = !held || allow.indexOf(L.ITEMS[held.item].place) >= 0;
-    c.save(); c.globalAlpha = ok ? (held ? .9 : .5) : .2; c.strokeStyle = held ? '#3f8a3c' : 'rgba(46,33,64,.5)'; c.lineWidth = 1.5; c.setLineDash([5, 5]);
+    var held = ed.held, cells = held ? spotCells(name, held) : null, any = cells && cells.some(function (r) { return r.some(Boolean); });
+    if (cells) for (var cy = 0; cy < g.rows; cy++) for (var cx = 0; cx < g.cols; cx++) { c.fillStyle = cells[cy][cx] ? 'rgba(110,200,90,.30)' : 'rgba(240,120,120,.20)'; c.fillRect(g.x + cx * g.cs + 2, g.y + cy * g.cs + 2, g.cs - 4, g.cs - 4); }
+    c.save(); c.globalAlpha = !held ? .5 : any ? .9 : .3; c.strokeStyle = held ? '#3f8a3c' : 'rgba(46,33,64,.5)'; c.lineWidth = 1.5; c.setLineDash([5, 5]);
     for (var i = 0; i <= g.cols; i++) { c.beginPath(); c.moveTo(g.x + i * g.cs, g.y); c.lineTo(g.x + i * g.cs, g.y + g.rows * g.cs); c.stroke(); }
     for (i = 0; i <= g.rows; i++) { c.beginPath(); c.moveTo(g.x, g.y + i * g.cs); c.lineTo(g.x + g.cols * g.cs, g.y + i * g.cs); c.stroke(); }
     c.restore();
-    if (held && ok && ed.hx >= 0) { var cell = cellAt({ g: g }, ed.hx, ed.hy); if (cell) { var f = L.footprint(held.item, held.r), ax = Math.max(0, Math.min(g.cols - f.w, cell.x)), ay = Math.max(0, Math.min(g.rows - f.h, cell.y)), can = L.canPlace(state, name, held.item, ax, ay, held.r, held.fromId);
-      c.globalAlpha = .6; D.draw(c, held.item, g.x + ax * g.cs, g.y + ay * g.cs, g.cs, held.r, time); c.globalAlpha = 1; A.rr(c, g.x + ax * g.cs, g.y + ay * g.cs, f.w * g.cs, f.h * g.cs, 8); c.fillStyle = can ? 'rgba(120,200,100,.28)' : 'rgba(240,100,100,.28)'; c.fill(); } }
+    if (held && ed.hx >= 0) { var cell = cellAt({ g: g }, ed.hx, ed.hy); if (cell) { var sp = L.spotAt(state, name, held.item, cell.x, cell.y, held.r, held.fromId);
+      if (sp.ok) { c.globalAlpha = .6; if (sp.on) { var h = L.findPlaced(state, sp.on); D.drawOn(c, held.item, h, sp.slot, g.x + h.x * g.cs, g.y + h.y * g.cs, g.cs, time); } else D.draw(c, held.item, g.x + sp.x * g.cs, g.y + sp.y * g.cs, g.cs, held.r, time); c.globalAlpha = 1; } } }
     if (ed.sel) { var p = L.findPlaced(state, ed.sel); if (p && p.grid === name) { var fp = L.footprint(p.item, p.r); A.rr(c, g.x + p.x * g.cs - 3, g.y + p.y * g.cs - 3, fp.w * g.cs + 6, fp.h * g.cs + 6, 10); c.lineWidth = 4; c.strokeStyle = '#d9539a'; c.setLineDash([8, 6]); c.stroke(); c.setLineDash([]); } }
     buttons.push({ x: g.x, y: g.y, w: g.cols * g.cs, h: g.rows * g.cs, fn: editTap });
   }
+  // which cells would accept the held thing right now (green) and which wouldn't (soft red)
+  function spotCells(name, held) { var g = L.GRIDS[name], out = []; for (var y = 0; y < g.rows; y++) { var row = []; for (var x = 0; x < g.cols; x++) { var sp = L.spotAt(state, name, held.item, x, y, held.r, held.fromId), f = L.footprint(held.item, held.r);
+      row.push(sp.ok && (sp.on || (x >= sp.x && x < sp.x + f.w && y >= sp.y && y < sp.y + f.h))); } out.push(row); } return out; }
   function drawYardGrid() { /* drawn in world space: grid lines over the lawn */ var g = { x: Wd.YARD.x, y: Wd.YARD.y, cs: 40, cols: Wd.YARD.cols, rows: Wd.YARD.rows }, sx = Math.round(cam.x), sy = Math.round(cam.y);
     c.restore(); c.save(); drawGridOverlay('yard', { x: g.x - sx, y: g.y - sy, cs: 40, cols: g.cols, rows: g.rows }); c.restore(); c.save(); c.translate(-sx, -sy); }
   // Decorating list: big rows (icon, name, count), category chips, drag or arrows to scroll. Tap a row, then tap a spot; the list stays open.
-  var TRAY_W = 330, CATS = [['all', 'All'], ['furn', 'Furniture'], ['wall', 'Wall'], ['rug', 'Rug'], ['out', 'Outdoor'], ['season', 'Seasonal']];
-  function catOf(k) { var d = L.ITEMS[k]; if (d.premium && /^pack\./.test(d.premium) || k === 'pumpkin') return 'season'; if (d.place === 'wall') return 'wall'; if (d.place === 'rug' || d.place === 'yardrug') return 'rug'; if (d.place === 'yard') return 'out'; return 'furn'; }
+  var TRAY_W = 330, CATS = [['all', 'All'], ['furn', 'Furniture'], ['wall', 'Wall'], ['rug', 'Rug'], ['small', 'Small Things'], ['out', 'Outdoor'], ['season', 'Seasonal']];
+  function catOf(k) { var d = L.ITEMS[k]; if (d.premium && /^pack\./.test(d.premium) || k === 'pumpkin') return 'season'; if (d.place === 'wall') return 'wall'; if (d.pt === 'small') return 'small'; if (d.place === 'rug' || d.place === 'yardrug') return 'rug'; if (d.place === 'yard') return 'out'; return 'furn'; }
   function drawTray(area, w) {
     var x = VW - SR - w, y = 88 + ST, h = VH - y - 8 - SB; panel(x, y, w - 8, h, 20); buttons.push({ x: x, y: y, w: w, h: h, fn: function () {} });
     ed.cat = ed.cat || 'all'; var ci = Math.max(0, CATS.findIndex(function (ct) { return ct[0] === ed.cat; })), setCat = function (d) { ci = (ci + d + CATS.length) % CATS.length; ed.cat = CATS[ci][0]; ed.scroll = 0; S.play('tap'); };
@@ -2667,8 +2761,8 @@ body.touch.roam #touch-ui { display: block; }
       button(x, y, bw, 58, 'Rotate', function () { ed.held.r = (ed.held.r + 1) % 4; S.play('tap'); }, '#bfdcf5', 28); button(x + bw + 12, y, bw, 58, 'Cancel', function () { ed.held = null; }, '#f3e2bd', 28); }
     else if (ed.sel) { var p = L.findPlaced(state, ed.sel); if (!p) { ed.sel = null; return; } text(nm(p.item), x, y - 18, 28, '#fff6e0', 'left', 6);
       button(x, y, bw, 58, 'Move', function () { ed.held = { item: p.item, r: p.r, fromId: p.id }; ed.sel = null; S.play('tap'); }, '#ffb3d6', 28);
-      button(x + (bw + 12), y, bw, 58, 'Rotate', function () { if (!L.rotate(state, p.id)) showToast('No room to turn'); else { S.play('tap'); save(); } }, '#bfdcf5', 28);
-      button(x + 2 * (bw + 12), y, bw, 58, 'Store', function () { L.store(state, p.id); ed.sel = null; S.play('pick'); save(); }, '#f3e2bd', 28); }
+      button(x + (bw + 12), y, bw, 58, 'Rotate', function () { if (!L.rotate(state, p.id)) showToast(p.on ? 'It stays put on top' : L.childrenOf(state, p.id).length ? WHY.loaded : 'No room to turn'); else { S.play('tap'); save(); } }, '#bfdcf5', 28);
+      button(x + 2 * (bw + 12), y, bw, 58, 'Store', function () { var kids = L.childrenOf(state, p.id).length; L.store(state, p.id); if (kids) showToast('Stored, with what was on top'); ed.sel = null; S.play('pick'); save(); }, '#f3e2bd', 28); }
     else text('Tap your things, or tap a placed item to move it', x, y + 26, 28, '#fff6e0', 'left', 6);
   }
 
