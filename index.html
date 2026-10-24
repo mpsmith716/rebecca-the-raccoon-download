@@ -40,6 +40,8 @@ body.touch.roam #touch-ui { display: block; }
 (function (global) {
   'use strict';
   var KEY = 'rebecca-raccoon.store.v1';
+  // Launch flags. The Treehouse Pass (subscription) is dormant for launch: hidden from the shop, not purchasable, grants nothing. Flip to true to bring it back.
+  var FLAGS = { pass: false };
   // kind: world | season | cosmetic | bundle | pass.  grants: entitlement ids this product unlocks (besides itself).
   var CATALOG = [
     { id: 'world.grove', kind: 'world', title: 'Glimmer Grove', price: '$3.99', desc: 'A glowing crystal forest.', icon: 'grove' },
@@ -66,16 +68,17 @@ body.touch.roam #touch-ui { display: block; }
     restore: function () { return Promise.resolve(null); } }; // null = "nothing from a server", keep local
 
   function create(opts) {
-    opts = opts || {}; var storage = opts.storage || null, adapter = opts.adapter || TestAdapter, owned = {}, listeners = [];
+    opts = opts || {}; var storage = opts.storage || null, adapter = opts.adapter || TestAdapter, owned = {}, listeners = [], flags = Object.assign({}, FLAGS, opts.flags || {});
+    function hidden(p) { return p.kind === 'pass' && !flags.pass; }
     try { var raw = storage && storage.getItem(KEY), o = raw && JSON.parse(raw); if (o && Array.isArray(o.owned)) o.owned.forEach(function (id) { if (BY[id] && !BY[id].soon) owned[id] = true; }); } catch (e) {}
     function persist() { try { if (storage) storage.setItem(KEY, JSON.stringify({ v: 1, owned: Object.keys(owned) })); } catch (e) {} }
     function changed() { persist(); listeners.forEach(function (f) { try { f(); } catch (e) {} }); }
-    function hasPass() { return !!(owned['pass.monthly'] || owned['pass.yearly']); }
+    function hasPass() { return !!flags.pass && !!(owned['pass.monthly'] || owned['pass.yearly']); }
     // owns(entitlement): directly bought, granted by a bundle, or covered by the pass
-    function owns(id) { var p = BY[id]; if (!p || p.soon || p.bookOnly) return false; /* book worlds unlock in-game via the book hunt, never sold or bundled */ if (owned[id]) return true; if (hasPass()) return true;
+    function owns(id) { var p = BY[id]; if (!p || p.soon || p.bookOnly || hidden(p)) return false; /* book worlds unlock in-game via the book hunt, never sold or bundled */ if (owned[id]) return true; if (hasPass()) return true;
       return Object.keys(owned).some(function (k) { var g = BY[k].grants; return g && g.indexOf(id) >= 0; }); }
-    function status(id) { var p = BY[id]; if (!p) return 'none'; if (p.bookOnly) return 'book'; if (p.soon) return 'soon'; return owns(id) ? 'owned' : 'buy'; }
-    function purchase(id) { var p = BY[id]; if (!p) return Promise.resolve({ status: 'unknown' }); if (p.soon) return Promise.resolve({ status: 'soon' }); if (p.bookOnly) return Promise.resolve({ status: 'book' }); if (owns(id)) return Promise.resolve({ status: 'owned' });
+    function status(id) { var p = BY[id]; if (!p || hidden(p)) return 'none'; if (p.bookOnly) return 'book'; if (p.soon) return 'soon'; return owns(id) ? 'owned' : 'buy'; }
+    function purchase(id) { var p = BY[id]; if (!p) return Promise.resolve({ status: 'unknown' }); if (p.soon) return Promise.resolve({ status: 'soon' }); if (hidden(p)) return Promise.resolve({ status: 'unavailable' }); if (p.bookOnly) return Promise.resolve({ status: 'book' }); if (owns(id)) return Promise.resolve({ status: 'owned' });
       return adapter.purchase(p).then(function (r) { if (!r || !r.ok) return { status: r && r.cancelled ? 'cancelled' : 'failed' }; owned[id] = true; changed(); return { status: 'granted', id: id }; },
         function () { return { status: 'failed' }; }); }
     function restore() { return adapter.restore().then(function (ids) { if (Array.isArray(ids)) { ids.forEach(function (id) { if (BY[id] && !BY[id].soon) owned[id] = true; }); changed(); } return Object.keys(owned); }); }
@@ -84,11 +87,11 @@ body.touch.roam #touch-ui { display: block; }
     function seasonal(date) { var m = (date || new Date()).getMonth() + 1; return CATALOG.filter(function (p) { return p.kind === 'season' && (!p.placeholder || p.months.indexOf(m) >= 0); })
       .map(function (p) { return { p: p, f: !!(p.months && p.months.indexOf(m) >= 0 && !p.soon) }; }).sort(function (a, b) { return (b.f - a.f) || (a.p.soon - b.p.soon); }).map(function (x) { return x.p; }); }
     function featured(id, date) { var p = BY[id], m = (date || new Date()).getMonth() + 1; return !!(p && p.months && !p.soon && p.months.indexOf(m) >= 0); }
-    return { seasonal: seasonal, featured: featured, CATALOG: CATALOG, product: function (id) { return BY[id]; }, list: function (kind) { return CATALOG.filter(function (p) { return !kind || p.kind === kind; }); },
+    return { seasonal: seasonal, featured: featured, CATALOG: CATALOG, product: function (id) { return BY[id]; }, list: function (kind) { return CATALOG.filter(function (p) { return (!kind || p.kind === kind) && !hidden(p); }); }, flags: flags,
       owns: owns, status: status, purchase: purchase, restore: restore, reset: reset, ownedIds: function () { return Object.keys(owned); }, hasPass: hasPass,
       testMode: !!adapter.testMode, adapterName: adapter.name, onChange: function (f) { listeners.push(f); }, bundleSavings: bundleSavings };
   }
-  var api = { create: create, CATALOG: CATALOG, TestAdapter: TestAdapter, KEY: KEY, bundleSavings: bundleSavings };
+  var api = { create: create, FLAGS: FLAGS, CATALOG: CATALOG, TestAdapter: TestAdapter, KEY: KEY, bundleSavings: bundleSavings };
   if (typeof module !== 'undefined' && module.exports) module.exports = api; else global.StoreModule = api;
 })(typeof window !== 'undefined' ? window : this);
 
@@ -418,7 +421,7 @@ body.touch.roam #touch-ui { display: block; }
       hunts: { acorn: blankHunt(), pearl: blankHunt(), bookmap: blankHunt(), quill: blankHunt() },
       bag: {}, book: {}, placed: [], nextId: 1, outfit: 'classic', granted: {}, custom: [], nextCustom: 1, riddle: { tier: 1, fast: 0, miss: 0 }, stats: {}, bedtime: { at: 21, lock: false }, sleptOn: '',
       day: { key: '', picked: [], dailySolved: false, tasks: [], requests: [], bought: [], soldDeal: [], traded: [] },
-      hearts: { hazel: 0, bramble: 0, olive: 0 }, muted: false, seenIntro: false, seen: {}, myBook: '', bookmarks: {}, loft: false, gear: { pole: 1, net: 1, shovel: 1, lantern: 0, pack: 1 }, records: {} };
+      hearts: { hazel: 0, bramble: 0, olive: 0 }, muted: false, readAloud: false, seenIntro: false, seen: {}, myBook: '', bookmarks: {}, loft: false, gear: { pole: 1, net: 1, shovel: 1, lantern: 0, pack: 1 }, records: {} };
   }
   function blankHunt() { return { riddle: false, clues: [], dug: false, placed: false }; }
   function hunt(state, tid) { var h = state.hunts[tid]; if (!h) h = state.hunts[tid] = blankHunt(); return h; }
@@ -830,7 +833,7 @@ body.touch.roam #touch-ui { display: block; }
     if (o.stats && typeof o.stats === 'object') Object.keys(o.stats).filter(function (k) { return /^\d{4}-\d\d-\d\d$/.test(k); }).sort().slice(-60).forEach(function (k) { var d = o.stats[k] || {}; s.stats[k] = { r: d.r | 0, f: d.f | 0, t: d.t | 0, m: d.m | 0 }; });
     if (o.bedtime) s.bedtime = { at: BEDTIMES.indexOf(o.bedtime.at) >= 0 ? o.bedtime.at : 21, lock: !!o.bedtime.lock };
     if (typeof o.sleptOn === 'string') s.sleptOn = o.sleptOn.slice(0, 10);
-    s.myBook = typeof o.myBook === 'string' && canPickBook(o.myBook) ? o.myBook : ''; s.muted = !!o.muted; s.seenIntro = !!o.seenIntro; if (o.seen && typeof o.seen === 'object') for (var k in o.seen) if (/^[a-z]+$/.test(k)) s.seen[k] = !!o.seen[k];
+    s.myBook = typeof o.myBook === 'string' && canPickBook(o.myBook) ? o.myBook : ''; s.muted = !!o.muted; s.readAloud = !!o.readAloud; s.seenIntro = !!o.seenIntro; if (o.seen && typeof o.seen === 'object') for (var k in o.seen) if (/^[a-z]+$/.test(k)) s.seen[k] = !!o.seen[k];
     return s;
   }
   function save(storage, state) { try { storage.setItem(SAVE_KEY, JSON.stringify(state)); return true; } catch (e) { return false; } }
@@ -1959,6 +1962,59 @@ body.touch.roam #touch-ui { display: block; }
 
 </script>
 <script>
+/* Read-aloud for younger kids (0.6). Offline only.
+ * - Android app: native ReadAloud plugin (device text-to-speech; WebView has no speechSynthesis).
+ * - Browsers: window.speechSynthesis, using ONLY voices with localService === true (on-device).
+ * If neither has an offline voice, available() is false and the game shows a gentle fallback.
+ * Nothing is recorded, stored or sent. */
+(function (global) {
+  'use strict';
+  var RATE = 0.8, PITCH = 1.1; // slow, friendly
+  var native = null, nativeState = 'none', speaking = false, listeners = [];
+  function cap() { return global.Capacitor; }
+  try {
+    var C = cap();
+    if (C && C.isNativePlatform && C.isNativePlatform() && C.registerPlugin) {
+      native = C.registerPlugin('ReadAloud'); nativeState = 'starting';
+      var poll = function (n) { native.status().then(function (r) { nativeState = r.state; if (r.state === 'starting' && n > 0) setTimeout(function () { poll(n - 1); }, 400); }, function () { nativeState = 'none'; }); };
+      poll(25);
+      if (native.addListener) native.addListener('done', function () { speaking = false; });
+    }
+  } catch (e) { native = null; nativeState = 'none'; }
+  function synth() { return global.speechSynthesis && typeof global.SpeechSynthesisUtterance === 'function' ? global.speechSynthesis : null; }
+  function localVoice() {
+    var s = synth(); if (!s) return null; var v = [];
+    try { v = s.getVoices() || []; } catch (e) { v = []; }
+    v = v.filter(function (x) { return x && x.localService; });
+    var en = v.filter(function (x) { return /^en/i.test(x.lang || ''); });
+    var us = en.filter(function (x) { return /en[-_]US/i.test(x.lang || ''); });
+    return us[0] || en[0] || null;
+  }
+  try { var s0 = synth(); if (s0) { s0.getVoices(); if (s0.addEventListener) s0.addEventListener('voiceschanged', function () {}); } } catch (e) {}
+  function clean(t) { return String(t || '').replace(/[\u{1F300}-\u{1FAFF}\u2600-\u27BF]/gu, '').replace(/\s+/g, ' ').trim(); }
+  function available() { if (native) return nativeState === 'ready'; return !!localVoice(); }
+  function status() { if (native) return nativeState; return synth() ? (localVoice() ? 'ready' : 'none') : 'none'; }
+  function stop() { speaking = false; if (native) { try { native.stop(); } catch (e) {} return; } var s = synth(); if (s) try { s.cancel(); } catch (e) {} }
+  function speak(text) {
+    text = clean(text); if (!text) return false;
+    if (native) {
+      if (nativeState !== 'ready') return false;
+      speaking = true; native.speak({ text: text, rate: RATE, pitch: PITCH }).catch(function () { speaking = false; });
+      return true;
+    }
+    var s = synth(), v = localVoice(); if (!s || !v) return false;
+    try {
+      s.cancel(); var u = new global.SpeechSynthesisUtterance(text);
+      u.voice = v; u.lang = v.lang; u.rate = RATE; u.pitch = PITCH; u.volume = 1;
+      u.onend = u.onerror = function () { speaking = false; };
+      speaking = true; s.speak(u); return true;
+    } catch (e) { speaking = false; return false; }
+  }
+  global.ReadAloud = { speak: speak, stop: stop, available: available, status: status, isSpeaking: function () { return speaking; }, RATE: RATE, PITCH: PITCH };
+})(typeof window !== 'undefined' ? window : this);
+
+</script>
+<script>
 /* Keyboard + touch (analog joystick and big action button). */
 (function (global) {
   'use strict';
@@ -2058,6 +2114,18 @@ body.touch.roam #touch-ui { display: block; }
     icon(x, y); buttons.push({ x: x - r, y: y - r, w: r * 2, h: r * 2, fn: fn });
   }
   function coin(x, y, r) { A.ell(c, x, y, r, r); c.fillStyle = '#ffd36e'; c.fill(); c.lineWidth = 2.5; c.strokeStyle = INK; c.stroke(); A.ell(c, x, y, r * .55, r * .55); c.strokeStyle = '#c88a12'; c.lineWidth = 2; c.stroke(); }
+  /* ---------- 0.6: read-aloud (offline, device voice) ---------- */
+  var cine = false; // store-graphics only: hide HUD + guide arrow (tools/launchshots.js)
+  var RA = window.ReadAloud || { speak: function () { return false; }, stop: function () {}, available: function () { return false; }, isSpeaking: function () { return false; } }, readKey = null;
+  function readText(lines) { return (Array.isArray(lines) ? lines : [lines]).join(' '); }
+  function readNow(t) { if (RA.available() && RA.speak(t)) return true; showToast('No reading voice on this device. A grown-up can read it!'); return false; }
+  function speakerBtn(x, y, r, t) {
+    var on = RA.isSpeaking();
+    roundBtn(x, y, r, function (cx, cy) { c.fillStyle = INK; c.fillRect(cx - 12, cy - 6, 8, 12); c.beginPath(); c.moveTo(cx - 5, cy - 6); c.lineTo(cx + 4, cy - 13); c.lineTo(cx + 4, cy + 13); c.lineTo(cx - 5, cy + 6); c.closePath(); c.fill(); c.lineWidth = 3; c.strokeStyle = on ? '#d9539a' : INK; c.lineCap = 'round'; for (var k = 1; k <= 2; k++) { c.beginPath(); c.arc(cx + 5, cy, 6 * k + (on ? Math.sin(time * 8 + k) * 1.5 : 0), -0.8, 0.8); c.stroke(); } },
+      function () { if (RA.isSpeaking()) { RA.stop(); return; } S.play('tap'); readNow(t); });
+    buttons[buttons.length - 1].label = 'Read aloud';
+  }
+  function autoRead(key, t) { if (readKey === key) return; readKey = key; if (state.readAloud && !state.muted && RA.available()) RA.speak(t); }
   function say(pages, done) { dlg = { pages: pages, i: 0, done: done, t: 0 }; S.play('page'); }
   function showToast(t) { toast = { t: t, life: 2.6 }; }
   function modeName(m) { return { guided: 'Guided', independent: 'Independent', master: 'Master' }[m]; }
@@ -2277,6 +2345,7 @@ body.touch.roam #touch-ui { display: block; }
     if (screen !== 'title') bedtimeTick(dt);
     if (screen === 'title') { if (I.take('act') && !overlay) startGame(); return; }
     if (overlay !== 'sleepy') { playT += dt; if (playT >= 60) { playT -= 60; L.stat(state, today(), 'm'); } }
+    if (readKey && !dlg && overlay !== 'bookq') { readKey = null; RA.stop(); }
     if (dlg) { dlg.t += dt; var pg = dlg.pages[dlg.i]; if (!pg.choices && (I.take('act') || I.take('back'))) advance(); else if (pg.choices && I.take('back')) { dlg = null; } I.take('book'); I.take('hint'); return; }
     if (overlay) { if (I.take('back') && overlay !== 'sleepy' && !txtOpen) overlay = null; I.take('act'); I.take('book'); return; }
     if (screen === 'house' || screen === 'yardedit') { if (I.take('back')) { if (ed && (ed.held || ed.sel)) { ed.held = null; ed.sel = null; } else exitEdit(); } if (I.take('act') && screen === 'house' && !ed) openBooks(); return; }
@@ -2401,15 +2470,15 @@ body.touch.roam #touch-ui { display: block; }
     items.sort(function (a, b) { return a.y - b.y; }).forEach(function (it) { it.f(); });
     if (fishing) drawBobber();
     fx.forEach(function (p) { c.globalAlpha = Math.min(1, p.life * 2); c.fillStyle = p.col; A.ell(c, p.x, p.y, 5, 5); c.fill(); c.lineWidth = 1.5; c.strokeStyle = INK; c.stroke(); }); c.globalAlpha = 1;
-    if (state.mode === 'guided' && !editing) { var tgt = guidedTarget(); if (tgt) drawPawMarker(tgt.x, tgt.y + Math.sin(time * 4) * 5); }
+    if (state.mode === 'guided' && !editing && !cine) { var tgt = guidedTarget(); if (tgt) drawPawMarker(tgt.x, tgt.y + Math.sin(time * 4) * 5); }
     var ph = phase(), nFire = ph === 'night' ? 26 : ph === 'dusk' ? 10 : 0;
     for (var i = 0; i < 14 + nFire; i++) { var px = cx + ((i * 197 + time * 12 * (i % 3 + 1)) % VW), py = cy + ((i * 131 + Math.sin(time * .7 + i) * 40) % VH + VH) % VH; c.fillStyle = i >= 14 ? 'rgba(255,250,150,' + (.55 + .4 * Math.sin(time * 3 + i)) + ')' : 'rgba(255,248,190,' + (.35 + .3 * Math.sin(time * 2 + i)) + ')'; A.ell(c, px, py, i >= 14 ? 3 : 2.5, i >= 14 ? 3 : 2.5); c.fill(); }
     if (editing) drawYardGrid();
     c.restore();
     drawLighting(cx, cy);
     if (editing) { drawTray('yard', trayW); drawEditBar('Decorate Your Yard'); return; }
-    if (state.mode === 'guided') { var g2 = guidedTarget(); if (g2) edgeArrow(g2.x - cx, g2.y - cy); }
-    drawHUD();
+    if (state.mode === 'guided' && !cine) { var g2 = guidedTarget(); if (g2) edgeArrow(g2.x - cx, g2.y - cy); }
+    if (!cine) drawHUD();
   }
   function lightPos() {
     var Ls = [], th = Wd.BUILDINGS.treehouse, sh = Wd.BUILDINGS.shop;
@@ -2508,6 +2577,7 @@ body.touch.roam #touch-ui { display: block; }
     lines.forEach(function (l, i) { text(l, x + 32, y + 80 + i * 37, 30, INK); });
     if (nch) { var bw = (w - 64 - (per - 1) * 14) / per; pg.choices.forEach(function (chc, i) { button(x + 32 + (i % per) * (bw + 14), y + 74 + lines.length * 37 + 8 + Math.floor(i / per) * 66, bw, 56, chc.label, function () { choose(chc); }, '#cfe8b4', 28); }); }
     else { var b = Math.sin(time * 5) * 3; c.fillStyle = '#d9539a'; c.beginPath(); c.moveTo(x + w - 40, y + hh - 30 + b); c.lineTo(x + w - 24, y + hh - 30 + b); c.lineTo(x + w - 32, y + hh - 20 + b); c.closePath(); c.fill(); buttons.push({ x: 0, y: 0, w: VW, h: VH, fn: advance }); }
+    if (pg.riddle || pg.hint || pg.clue) { c.font = font(32); var t = readText(pg.lines); speakerBtn(Math.min(x + 32 + c.measureText(pg.who).width + 50, x + w - 160), y + 34, 30, t); autoRead(dlg.pages + ':' + dlg.i + ':' + t, t); }
   }
   function sheet(title, col) { c.fillStyle = 'rgba(46,33,64,.45)'; c.fillRect(0, 0, VW, VH); var w = Math.min(VW - 24 - SL - SR, 1060), x = (VW - w) / 2, y = 10 + ST, h = VH - 20 - ST - SB; panel(x, y, w, h, 28); text(title, x + 30, y + 38, 36, col || '#7a52b8'); buttons.push({ x: 0, y: 0, w: VW, h: VH, fn: function () {} }); return { x: x, y: y, w: w, h: h }; }
   function closeBtn(P) { roundBtn(P.x + P.w - 36, P.y + 36, 26, function (x, y) { c.beginPath(); c.moveTo(x - 8, y - 8); c.lineTo(x + 8, y + 8); c.moveTo(x + 8, y - 8); c.lineTo(x - 8, y + 8); c.lineWidth = 4; c.strokeStyle = INK; c.lineCap = 'round'; c.stroke(); }, function () { overlay = null; S.play('tap'); }); }
@@ -2581,7 +2651,7 @@ body.touch.roam #touch-ui { display: block; }
       var y = rowsY + i * rh, x = x0; A.rr(c, x, y, cw, rh - 8, 16); c.fillStyle = '#fffdf6'; c.fill(); c.lineWidth = 3; c.strokeStyle = 'rgba(46,33,64,.35)'; c.stroke();
       if (r.icon2) { Wd.item(c, r.icon2, x + 30, y + 52, time, 1.1); text('>', x + 54, y + 38, 26, INK, 'center'); Wd.item(c, r.icon, x + 80, y + 54, time, 1.1); } else Wd.item(c, r.icon, x + 42, y + 56, time, 1.4);
       var tx = x + (r.icon2 ? 108 : 84), mw = Math.min(170, cw * .24), bw = 132, textW = cw - (tx - x) - mw - bw - (r.price !== undefined ? 90 : 20) - 30;
-      fitText(r.title, tx, y + 26, 28, textW, INK); fitText(L.creditOf(r.icon) && !r.icon2 ? L.creditOf(r.icon) + ' · ' + r.sub : r.sub, tx, y + 56, 26, textW, L.creditOf(r.icon) && !r.icon2 ? '#d9539a' : '#7a6a5a');
+      fitText(r.title, tx, y + 26, 28, textW, INK); fitText(L.creditOf(r.icon) && !r.icon2 ? L.creditOf(r.icon) : r.sub, tx, y + 56, 28, textW, L.creditOf(r.icon) && !r.icon2 ? '#d9539a' : '#7a6a5a');
       if (L.creditOf(r.icon) && !r.icon2) rosette(x + 66, y + 22, 13);
       var mx = x + cw - bw - mw - (r.price !== undefined ? 100 : 30); meter(mx, y + 38, mw, r.ratio, r.tradeMeter ? 'trade' : r.sense);
       if (r.price !== undefined) { coin(x + cw - bw - 78, y + 38, 12); text(String(r.price), x + cw - bw - 60, y + 39, 28, INK); }
@@ -2795,7 +2865,7 @@ body.touch.roam #touch-ui { display: block; }
     keys.forEach(function (k, i) { var bx = kx + (i % 3) * (kw + 10), by = ky + Math.floor(i / 3) * (kh + 10);
       button(bx, by, kw, kh, k === 'del' ? '⌫' : k === 'ok' ? 'OK' : k, function () { gateKey(k); }, k === 'ok' ? '#cfe8b4' : k === 'del' ? '#f3e2bd' : '#fffaf0', 32); });
   }
-  var GU_TABS = [['world', 'Worlds'], ['season', 'Seasonal'], ['cosmetic', 'Outfits & Decor'], ['bundle', 'Bundle'], ['pass', 'Pass']];
+  var GU_TABS = [['world', 'Worlds'], ['season', 'Seasonal'], ['cosmetic', 'Outfits & Decor'], ['bundle', 'Bundle'], ['pass', 'Pass']].filter(function (t) { return t[0] !== 'pass' || (Store.flags && Store.flags.pass); }); // pass dormant at launch
   function productIcon(p, cx, cy, sz) {
     c.save(); if (p.soon) c.globalAlpha = .45;
     var u = sz / 100;
@@ -2867,7 +2937,11 @@ body.touch.roam #touch-ui { display: block; }
   /* ---------- 0.4: kid credits ---------- */
   function rosette(x, y, r) { for (var i = 0; i < 10; i++) { var a = i / 10 * 6.283; A.ell(c, x + Math.cos(a) * r * .8, y + Math.sin(a) * r * .8, r * .42, r * .42); c.fillStyle = '#ff86bd'; c.fill(); }
     A.ell(c, x, y, r * .78, r * .78); A.fillStroke(c, '#ffd36e', 2.2); c.fillStyle = '#fff'; A.star(c, x, y, r * .5); }
-  function kidBadge(cx, cy, label, maxW) { c.font = font(28); var w = Math.min(maxW || 400, c.measureText(label).width + 66), x = cx - w / 2;
+  function kidBadge(cx, cy, label, maxW) { c.font = font(28); var full = c.measureText(label).width + 66, w = Math.min(maxW || 400, full), x = cx - w / 2;
+    var sp = label.lastIndexOf(' ');
+    if (full > w && sp > 0) { // 0.6: too narrow (phone shop panel) -> two lines instead of "Idea by Rebe..."
+      var l1 = label.slice(0, sp), l2 = label.slice(sp + 1); A.rr(c, x, cy - 46, w, 72, 22); A.fillStroke(c, '#ffe0ef', 2.5); rosette(x + 22, cy - 10, 14);
+      fitText(l1, x + 40, cy - 26, 28, w - 48, '#a8425f'); fitText(l2, x + 40, cy + 6, 28, w - 48, '#a8425f'); return; }
     A.rr(c, x, cy - 20, w, 40, 20); A.fillStroke(c, '#ffe0ef', 2.5); rosette(x + 22, cy, 14); fitText(label, x + 40, cy + 1, 28, w - 48, '#a8425f'); }
 
   /* ---------- 0.4: book covers (code-drawn placeholders) ---------- */
@@ -2934,7 +3008,7 @@ body.touch.roam #touch-ui { display: block; }
     var b = L.bookById(L.pickBook(state));
     if (bq.picking) { text('Which book do you have?', P.x + P.w / 2, P.y + 96, 32, '#7a52b8', 'center'); coverRow(P.x + 40, P.y + 126, P.w - 80, Math.min(220, P.h - 150), function () { bq.picking = false; bq.avoid = []; bq.ask = L.bookQuestion(state.myBook); bq.input = ''; bq.msg = ''; }); return; }
     bookCover(P.x + 24, P.y + 70, 74, 104, b); button(P.x + 108, P.y + 132, 184, 46, 'Change book', function () { bq.picking = true; S.play('page'); }, '#e8dcf5', 26);
-    var tx = P.x + 312, tw = P.w - 312 - 300; wrap(bq.ask.prompt, tw, 28).slice(0, 3).forEach(function (l, i) { text(l, tx, P.y + 86 + i * 30, 28, INK); });
+    var tx = P.x + 312, tw = P.w - 312 - 300 - 76; speakerBtn(tx + tw + 44, P.y + 104, 30, bq.ask.prompt); autoRead('bq:' + bq.ask.prompt, bq.ask.prompt); wrap(bq.ask.prompt, tw, 28).slice(0, 3).forEach(function (l, i) { text(l, tx, P.y + 86 + i * 30, 28, INK); });
     var ax = P.x + P.w - 284, aw = 260; A.rr(c, ax, P.y + 70, aw, 62, 16); A.fillStroke(c, '#fffdf6', 3); fitText(bq.input ? bq.input.toUpperCase() : ' ', ax + aw / 2, P.y + 102, 36, aw - 20, INK, 'center');
     if (bq.msg) fitText(bq.msg, ax + aw / 2, P.y + 158, 28, aw + 20, '#a8425f', 'center');
     var rows = ['ABCDEFGHIJ', 'KLMNOPQRST', 'UVWXYZ'], ky = P.y + 186, gap = 8, kw = (P.w - 48 - gap * 9) / 10, kh = Math.min(64, (P.y + P.h - 16 - ky - gap * 2) / 3);
@@ -2969,14 +3043,14 @@ body.touch.roam #touch-ui { display: block; }
     if (gu.page === 'shop') return drawGuShop();
     if (gu.page === 'home') {
       var P = sheet('For Grown-Ups', '#7a52b8'); closeBtn(P);
-      var items = [['Shop', 'shop', '#ffd36e'], ['Have a Rebecca book?', 'book', '#ffb3d6'], ['Hide a Treasure', 'hide', '#cfe8b4'], ['This Week', 'week', '#bfdcf5'], ['Bedtime', 'bedtime', '#e8dcf5'], ['Send an Idea', 'idea', '#ffe9a8']];
-      var gw = (P.w - 64 - 2 * 16) / 3, gh = Math.min(110, (P.h - 140 - 16) / 2);
+      var items = [['Shop', 'shop', '#ffd36e'], ['Have a Rebecca book?', 'book', '#ffb3d6'], ['Hide a Treasure', 'hide', '#cfe8b4'], ['This Week', 'week', '#bfdcf5'], ['Bedtime', 'bedtime', '#e8dcf5'], ['Send an Idea', 'idea', '#ffe9a8'], ['Read Aloud', 'read', '#c9f0e0']];
+      var rowsN = Math.ceil(items.length / 3), gw = (P.w - 64 - 2 * 16) / 3, gh = Math.min(110, (P.h - 140 - 16 * (rowsN - 1)) / rowsN);
       items.forEach(function (it, i) { button(P.x + 32 + (i % 3) * (gw + 16), P.y + 76 + Math.floor(i / 3) * (gh + 16), gw, gh, it[0], function () { gu.page = it[1]; gu.confirm = null; gu.msg = null; S.play('page'); }, it[2], 28); });
       fitText('Test build: no payments, no accounts, nothing leaves this device.', P.x + P.w / 2, P.y + P.h - 30, 28, P.w - 40, '#7a6a5a', 'center');
       return;
     }
-    var titles = { book: 'Have a Rebecca book?', hide: 'Hide a Treasure', week: 'This Week', bedtime: 'Bedtime', idea: 'Send an Idea' }, P2 = sheet(titles[gu.page] || '', '#7a52b8'); closeBtn(P2); guBack(P2);
-    ({ book: guBook, hide: guHide, week: guWeek, bedtime: guBedtime, idea: guIdea })[gu.page](P2);
+    var titles = { book: 'Have a Rebecca book?', hide: 'Hide a Treasure', week: 'This Week', bedtime: 'Bedtime', idea: 'Send an Idea', read: 'Read Aloud' }, P2 = sheet(titles[gu.page] || '', '#7a52b8'); closeBtn(P2); guBack(P2);
+    ({ book: guBook, hide: guHide, week: guWeek, bedtime: guBedtime, idea: guIdea, read: guRead })[gu.page](P2);
   }
   function guBook(P) {
     var names = L.bookList().map(function (b) { return b.name; }), ph = L.bookList().reduce(function (a, b) { return a + L.bookPlaceholders(b.id); }, 0), tot = L.BOOKS.reduce(function (a, b) { return a + b.questions.length; }, 0);
@@ -2991,6 +3065,14 @@ body.touch.roam #touch-ui { display: block; }
     var y = P.y + 222; fitText('Riddle level: ' + r.tierName + ' (' + r.tier + ' of 3).  About ' + r.minutes + ' minutes played.', P.x + 32, y, 28, P.w - 64, INK);
     var dw = Math.min(80, (P.w - 64) / 7); r.days.forEach(function (on, i) { var x = P.x + 32 + i * dw + dw / 2, yy = y + 56; A.ell(c, x, yy, 18, 18); A.fillStroke(c, on ? '#9fd66f' : '#eadfc8', 2.5); });
     text('Last 7 days. Stored on this device only.', P.x + 32, y + 110, 28, '#7a6a5a');
+  }
+  function guRead(P) {
+    var bw = (P.w - 64 - 14) / 2, ok = RA.available();
+    text('Read riddles and hints out loud automatically:', P.x + 32, P.y + 92, 28, INK);
+    [[true, 'Auto-read: On'], [false, 'Auto-read: Off']].forEach(function (o, i) { button(P.x + 32 + i * (bw + 14), P.y + 116, bw, 62, o[1], function () { state.readAloud = o[0]; if (!o[0]) RA.stop(); save(); S.play('tap'); }, state.readAloud === o[0] ? '#ffb3d6' : '#f3e2bd', 30); });
+    button(P.x + 32, P.y + 196, bw, 62, 'Try the voice', function () { readNow('Hi! I am Rebecca. Let us solve a riddle together!'); }, '#c9f0e0', 30);
+    var y = lines(P, [ok ? 'Voice: ready (uses this device\'s own voice, slow and friendly).' : 'Voice: none found on this device. Speaker buttons will say so; add a text-to-speech voice in the device settings.',
+      'Kids can always tap the speaker button on a riddle or hint. Nothing is recorded, and it works offline.'], P.y + 296);
   }
   function guBedtime(P) {
     var opts = [[0, 'Off'], [20, '8 pm'], [21, '9 pm'], [22, '10 pm']], bw = (P.w - 64 - 3 * 14) / 4;
@@ -3095,7 +3177,7 @@ body.touch.roam #touch-ui { display: block; }
   cv.addEventListener('pointermove', function (e) { if (!ed) return; var p = logical(e); if (e.pointerType === 'mouse') { ed.hx = p.x; ed.hy = p.y; }
     var tb = ed.trayBox, dg = ed.drag; if (dg && e.buttons !== 0 || dg && e.pointerType !== 'mouse') { var dy = p.y - dg.y; if (Math.abs(dy) > 14) dg.moved = true; if (dg.moved && tb) { var ns = Math.max(0, Math.min(tb.n - tb.per, dg.s0 - Math.round(dy / tb.rh))); ed.scroll = ns; } } });
   cv.addEventListener('pointerup', function () { if (ed) ed.drag = null; });
-  document.addEventListener('visibilitychange', function () { if (document.hidden) { save(); S.stopMusic(); } else if (screen !== 'title') S.startMusic(); });
+  document.addEventListener('visibilitychange', function () { if (document.hidden) { save(); S.stopMusic(); RA.stop(); } else if (screen !== 'title') S.startMusic(); });
   addEventListener('pagehide', save);
 
   /* ---------- loop ---------- */
@@ -3106,7 +3188,7 @@ body.touch.roam #touch-ui { display: block; }
 
   // test hooks (tools/smoke.js)
   window.__bookmarks = state.bookmarks;
-  window.__rebecca = { dirtSpots: function () { return DIRT_SPOTS; }, ov: function () { return overlay; }, cam: function () { return { x: Math.round(cam.x), y: Math.round(cam.y) }; }, shopTab: function (t) { if (t) shopTab = t; return shopTab; }, forceLunker: function (id) { lunker = { t: 0, id: id || 'whiskers' }; }, enterEdit: function (a) { enterEdit(a); }, ed: function () { return ed; }, openShop: function () { openShop(); }, room: function (r) { if (r) houseRoom = r; return houseRoom; }, bq: function () { return bq; }, bqKey: function (k) { bqKey(k); }, hide: function () { return hide; }, setBedT: function (t) { bedT = t; }, gu4: function (p) { if (p) gu.page = p; return gu.page; }, riddleOk: function () { return rq ? rq.d.ok : L.pickRiddle(state, today(), state.day.riddleN || 0).ok; }, openStoryMap: function () { openStoryMap(); }, setHide: function (h) { hide = h; }, state: function () { return state; }, player: player, start: startGame, teleport: function (x, y, dir) { player.x = x; player.y = y; if (dir) player.dir = dir; camInit = false; }, act: function () { var n = nearest(); if (n) { n.fn(); return n.label; } var s = fishSpot(); if (s) { startFishing(s); return 'Fish'; } return null; },
+  window.__rebecca = { dirtSpots: function () { return DIRT_SPOTS; }, hintNow: function () { hint(); }, cinematic: function (v) { cine = !!v; }, openBookQ: function (tid) { var T = L.TREASURES[tid]; openBookQ(tid, T.clues[0]); }, readKey: function () { return readKey; }, ov: function () { return overlay; }, cam: function () { return { x: Math.round(cam.x), y: Math.round(cam.y) }; }, shopTab: function (t) { if (t) shopTab = t; return shopTab; }, forceLunker: function (id) { lunker = { t: 0, id: id || 'whiskers' }; }, enterEdit: function (a) { enterEdit(a); }, ed: function () { return ed; }, openShop: function () { openShop(); }, room: function (r) { if (r) houseRoom = r; return houseRoom; }, bq: function () { return bq; }, bqKey: function (k) { bqKey(k); }, hide: function () { return hide; }, setBedT: function (t) { bedT = t; }, gu4: function (p) { if (p) gu.page = p; return gu.page; }, riddleOk: function () { return rq ? rq.d.ok : L.pickRiddle(state, today(), state.day.riddleN || 0).ok; }, openStoryMap: function () { openStoryMap(); }, setHide: function (h) { hide = h; }, state: function () { return state; }, player: player, start: startGame, teleport: function (x, y, dir) { player.x = x; player.y = y; if (dir) player.dir = dir; camInit = false; }, act: function () { var n = nearest(); if (n) { n.fn(); return n.label; } var s = fishSpot(); if (s) { startFishing(s); return 'Fish'; } return null; },
     nearest: function () { var n = nearest(); return n && { label: n.label, dig: !!n.dig }; }, advance: function () { while (dlg) { var pg = dlg.pages[dlg.i]; if (pg.choices) return pg.choices.map(function (x) { return x.label; }); dlg.t = 1; advance(); } }, choose: function (i) { choose(dlg.pages[dlg.i].choices[i]); },
     screen: function (s) { if (s) screen = s; return screen; }, overlay: function (o, tab) { overlay = o; if (tab) { shopTab = tab; bookTab = tab; } page = 0; }, dlg: function () { return dlg; }, cheer: function (v) { cheer = v; }, blocked: Wd.blocked, digVisible: function (tid) { return L.canDig(state, tid || 'acorn'); }, setDigT: function (t) { if (digAnim) digAnim.t = t; },
     titleButtons: function () { return titleButtons.map(function (b) { return { x: b.x / VW, y: b.y / VH, w: b.w / VW, h: b.h / VH }; }); }, setHour: function (h) { hourOverride = h; }, phase: phase, fishing: function () { return fishing && fishing.st; }, forceBite: function () { if (fishing) { fishing.st = 'bite'; fishing.t = 0; } }, pressAct: function () { I.press('act'); },
